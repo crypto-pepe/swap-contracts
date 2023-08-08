@@ -1,0 +1,1774 @@
+{-# STDLIB_VERSION 6 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+# TODO: add protocol fee claim (or transfer it automatically)
+# TODO: maybe add flash loans
+# TODO: maybe add callbacks
+
+# ---------- Constants ----------
+
+let SEP = "__"
+let WAVES = "waves"
+let MAX_INT = 9223372036854775807
+let MAX_FEE = 1000000
+let MAX_AMPLIFIER = 1000000
+let MAX_WEIGHT_AMPLIFIER = 1000000
+let MAX_WEIGHT = 1000000
+let SLIPPAGE_RATE_FACTOR = 1000000
+let FEE_RATE_FACTOR = 1000000
+let RATE_FACTOR = 1000000
+let PERCENT_FACTOR = 1000000000000.toBigInt()
+let ZERO_INT_LIST_10 = [0,0,0,0,0,0,0,0,0,0]
+let ZERO_INT_LIST_11 = ZERO_INT_LIST_10 :+ 0
+let ZERO_BIGINT = 0.toBigInt()
+let ZERO_BIGINT_LIST_11 = [ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT, ZERO_BIGINT]
+let INT_DECIMALS = 8
+let BIGINT_DECIMALS = 18
+let LIST_64 = split_51C("0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0", "_")
+
+let KEY_MULTISIG = "MULTISIG"
+let KEY_STATUS = "STATUS"
+let KEY_PAUSED = "PAUSED"
+let KEY_PAUSER = "PAUSER"
+let KEY_STORAGE = "STORAGE"
+let KEY_ASSETS = "ASSETS"
+let KEY_ASSET_BALANCES = "ASSET_BALANCES"
+let KEY_ASSET_WEIGHTS = "ASSET_WEIGHTS"
+let KEY_LP_FEE = "LP_FEE"
+let KEY_PROTOCOL_FEE = "PROTOCOL_FEE"
+let KEY_PRECISION = "PRECISION"
+let KEY_SIGMA_FEE_PER_LP = "SIGMA_FEE_PER_LP"
+let KEY_USER_SIGMA_FEE_PER_LP = "USER_SIGMA_FEE_PER_LP"
+let KEY_USER_LP = "USER_LP"
+let KEY_TOTAL_LP = "TOTAL_LP"
+let KEY_USER_PROFITS = "USER_PROFITS"
+
+# ---------- Validation functions ----------
+
+func _validateAddress(address_: String, err_: String) = {
+    match addressFromString(address_) {
+        case a:Address => true
+        case _ => throw(err_)
+    }
+}
+
+func _validateAsset(assetId_: String, err_: String) = {
+    if assetId_ == WAVES then true
+    else match assetInfo(fromBase58String(assetId_)) {
+        case a:Asset => true
+        case _ => throw(err_)
+    }
+}
+
+func _validateInt(val_: Int, lowerBoundary_: Int, upperBoundary_: Int, err_: String) = {
+    if val_ < lowerBoundary_ || val_ > upperBoundary_ then
+        throw(err_)
+    else true
+}
+
+func _validateBool(val_: Boolean, target_: Boolean, err_: String) = {
+    if val_ != target_ then
+        throw(err_)
+    else true
+}
+
+func _validateStringEqual(val1_: String, val2_: String, err_: String) = {
+    if val1_ != val2_ then
+        throw(err_)
+    else true
+}
+
+func _validateStringNotEq(val1_: String, val2_: String, err_: String) = {
+    if val1_ == val2_ then
+        throw(err_)
+    else true
+}
+
+func _validateIntList(val_: List[String], lowerBoundary_: Int, upperBoundary_: Int, err_: String) = {
+    func foldFunc(acc: Boolean, elem: String) = {
+        match parseInt(elem) {
+            case a:Int => acc && _validateInt(a, lowerBoundary_, upperBoundary_, err_)
+            case _ => throw(err_)
+        }
+    }
+
+    FOLD<10>(val_, true, foldFunc)
+}
+
+func _validateAssets(assets_: List[String], err_: String) = {
+    func foldFunc(acc: Boolean, elem: String) = {
+        acc && _validateAsset(elem, err_)
+    }
+
+    FOLD<10>(assets_, true, foldFunc)
+}
+
+func _validateIntEquals(val1_: Int, val2_: Int, err_: String) = {
+    if val1_ != val2_ then
+        throw(err_)
+    else true
+}
+
+func  _validateTokenName(val_: String, err_: String) = {
+    if val_.size() < 4 || val_.size() > 16 then
+        throw(err_)
+    else true
+}
+
+func  _validateTokenDescr(val_: String, err_: String) = {
+    if val_.size() > 1000 then
+        throw(err_)
+    else true
+}
+
+func  _validateDecimals(val_: Int, err_: String) = {
+    if val_ < 0 || val_ > 8 then
+        throw(err_)
+    else true
+}
+
+func _validatePayment(payment_: AttachedPayment, assetId_: String, requiredAmount_: Int, err_: String) = {
+    match payment_.assetId {
+        case a:ByteVector =>
+            if assetId_ != a.toBase58String() then
+                throw(err_ + ": asset")
+            else if payment_.amount < requiredAmount_ then
+                throw(err_ + ": amount")
+            else true
+        case _ => throw(err_ + ": asset")
+    }
+}
+
+func _validateListContains(list_: List[String], val_: String, err_: String) = {
+    if !list_.containsElement(val_) then
+        throw(err_)
+    else true
+}
+
+# ---------- Converting functions ----------
+
+func _assetToStr(asset_: ByteVector|Unit) = {
+    match asset_ {
+        case a: ByteVector => toBase58String(a)
+        case _ => WAVES
+    }
+}
+
+func _strToAsset(asset_: String) = {
+    if asset_ == WAVES || asset_ == "" then unit
+    else fromBase58String(asset_)
+}
+
+# ---------- Data structures functions ----------
+
+func _loadPause() = {
+    match getBoolean(KEY_PAUSED) {
+        case a:Boolean => a
+        case _ => false
+    }
+}
+
+func _savePause(isPaused_: Boolean) = {
+    [BooleanEntry(KEY_PAUSED, isPaused_)]
+}
+
+func _loadPauser() = {
+    match getString(KEY_PAUSER) {
+        case a:String => addressFromStringValue(a)
+        case _ => Address(base58'')
+    }
+}
+
+func _savePauser(pauser_: Address) = {
+    [StringEntry(KEY_PAUSER, pauser_.toString())]
+}
+
+func _loadMultisig() = {
+    match getString(KEY_MULTISIG) {
+        case a:String => addressFromStringValue(a)
+        case _ => Address(base58'')
+    }
+}
+
+func _saveMultisig(multisig_: Address) = {
+    [StringEntry(KEY_MULTISIG, multisig_.toString())]
+}
+
+func _loadStorage() = {
+    match getString(KEY_STORAGE) {
+        case a: String =>
+            let struct = a.split(SEP)
+            (
+                struct[0].fromBase58String(),       # lpAssetId
+                struct[1] == "1",                   # unlocked
+                parseIntValue(struct[2]),           # lpTotalSupply
+                parseIntValue(struct[3]),           # lp fee rate
+                parseIntValue(struct[4]),           # protocol fee rate
+                parseIntValue(struct[5]),           # max allocation amplifier
+                parseIntValue(struct[6]),           # weight amplifier
+                parseIntValue(struct[7]),           # slippage rate
+                parseIntValue(struct[8]),           # fee max rate
+                addressFromStringValue(struct[9])   # protocol fee contract
+            )
+        case _ => (base58'', false, 0, 0, 0, 0, 0, 0, 0, Address(base58''))
+    }
+}
+
+func _saveStorage(
+    storage_: (ByteVector, Boolean, Int, Int, Int, Int, Int, Int, Int, Address)
+) = {
+    [StringEntry(KEY_STORAGE, makeString([
+        storage_._1.toBase58String(),
+        if storage_._2 then "1" else "0",
+        storage_._3.toString(),
+        storage_._4.toString(),
+        storage_._5.toString(),
+        storage_._6.toString(),
+        storage_._7.toString(),
+        storage_._8.toString(),
+        storage_._9.toString(),
+        storage_._10.toString()
+    ], SEP))]
+}
+
+func _loadAssets() = {
+    match getString(KEY_ASSETS) {
+        case a:String => if a.size() > 0 then split_51C(a, SEP) else []
+        case _ => []
+    }
+}
+
+func _saveAssets(assets_: List[String]) = {
+    [StringEntry(KEY_ASSETS, makeString_11C(assets_, SEP))]
+}
+
+func _loadAssetBalances() = {
+    func foldFunc(acc: (List[Int], Int), elem: String) = {
+        let balance = elem.parseIntValue()
+        (acc._1 :+ balance, acc._2 + balance)
+    }
+
+    match getString(KEY_ASSET_BALANCES) {
+        case a:String =>
+            if a.size() > 0 then
+                FOLD<10>(split_51C(a, SEP), ([], 0), foldFunc)
+            else (ZERO_INT_LIST_10, 0)
+        case _ => (ZERO_INT_LIST_10, 0)
+    }
+}
+
+func _saveAssetBalances(balances_: List[Int]) = {
+    func foldFunc(acc: List[String], elem: Int) = {
+        acc :+ elem.toString()
+    }
+
+    [StringEntry(KEY_ASSET_BALANCES, makeString_11C(FOLD<10>(balances_, [], foldFunc), SEP))]
+}
+
+func _loadAssetWeights() = {
+    func foldFunc(acc: (List[Int], Int), elem: String) = {
+        let weight = elem.parseIntValue()
+        (acc._1 :+ weight, acc._2 + weight)
+    }
+
+    match getString(KEY_ASSET_WEIGHTS) {
+        case a:String =>
+            if a.size() > 0 then
+                FOLD<10>(split_51C(a, SEP), ([], 0), foldFunc)
+            else (ZERO_INT_LIST_10, 0)
+        case _ => (ZERO_INT_LIST_10, 0)
+    }
+}
+
+func _saveAssetWeights(weights_: List[Int]) = {
+    func foldFunc(acc: List[String], elem: Int) = {
+        acc :+ elem.toString()
+    }
+
+    [StringEntry(KEY_ASSET_WEIGHTS, makeString_11C(FOLD<10>(weights_, [], foldFunc), SEP))]
+}
+
+func _loadLpFee(assetId_: String) = {
+    match getInteger(makeString([KEY_LP_FEE, assetId_], SEP)) {
+        case a:Int => a
+        case _ => 0
+    }
+}
+
+func _saveLpFee(assetId_: String, val_: Int) = {
+    [IntegerEntry(makeString([KEY_LP_FEE, assetId_], SEP), val_)]
+}
+
+func _loadProtocolFee(assetId_: String) = {
+    match getInteger(makeString([KEY_PROTOCOL_FEE, assetId_], SEP)) {
+        case a:Int => a
+        case _ => 0
+    }
+}
+
+func _saveProtocolFee(assetId_: String, val_: Int) = {
+    [IntegerEntry(makeString([KEY_PROTOCOL_FEE, assetId_], SEP), val_)]
+}
+
+func _loadPrecision() = {
+    match getInteger(KEY_PRECISION) {
+        case a:Int => a
+        case _ => 0
+    }
+}
+
+func _savePrecision(val_: Int) = {
+    [IntegerEntry(KEY_PRECISION, val_)]
+}
+
+func _loadSigmaFeePerLp() = {
+    func foldFunc(acc: List[BigInt], elem: String) = {
+        acc :+ elem.parseBigIntValue()
+    }
+
+    match getString(KEY_SIGMA_FEE_PER_LP) {
+        case a:String =>
+            if a.size() > 0 then
+                FOLD<11>(split_51C(a, SEP), [], foldFunc)
+            else ZERO_BIGINT_LIST_11
+        case _ => ZERO_BIGINT_LIST_11
+    }
+}
+
+func _saveSigmaFeePerLp(val_: List[BigInt]) = {
+    func foldFunc(acc: List[String], elem: BigInt) = {
+        acc :+ elem.toString()
+    }
+
+    [StringEntry(
+        KEY_SIGMA_FEE_PER_LP,
+        makeString_11C(FOLD<11>(val_, [], foldFunc), SEP)
+    )]
+}
+
+func _loadUserSigmaFeePerLp(user_: Address) = {
+    func foldFunc(acc: List[BigInt], elem: String) = {
+        acc :+ elem.parseBigIntValue()
+    }
+
+    match getString(makeString([KEY_USER_SIGMA_FEE_PER_LP, user_.toString()], SEP)) {
+        case a:String =>
+            if a.size() > 0 then
+                FOLD<11>(split_51C(a, SEP), [], foldFunc)
+            else ZERO_BIGINT_LIST_11
+        case _ => ZERO_BIGINT_LIST_11
+    }
+}
+
+func _saveUserSigmaFeePerLp(user_: Address, val_: List[BigInt]) = {
+    func foldFunc(acc: List[String], elem: BigInt) = {
+        acc :+ elem.toString()
+    }
+
+    [StringEntry(
+        makeString([KEY_USER_SIGMA_FEE_PER_LP, user_.toString()], SEP),
+        makeString_11C(FOLD<11>(val_, [], foldFunc), SEP)
+    )]
+}
+
+func _loadUserLp(address_: Address) = {
+    match getInteger(makeString([KEY_USER_LP, address_.toString()], SEP)) {
+        case a:Int => a
+        case _ => 0
+    }
+}
+
+func _saveUserLp(address_: Address, val_: Int) = {
+    [IntegerEntry(makeString([KEY_USER_LP, address_.toString()], SEP), val_)]
+}
+
+func _loadTotalLp() = {
+    match getInteger(KEY_TOTAL_LP) {
+        case a:Int => a
+        case _ => 0
+    }
+}
+
+func _saveTotalLp(val_: Int) = {
+    [IntegerEntry(KEY_TOTAL_LP, val_)]
+}
+
+func _loadUserProfits(user_: Address) = {
+    func foldFunc(acc: List[Int], elem: String) = {
+        acc :+ elem.parseIntValue()
+    }
+
+    match getString(makeString([KEY_USER_PROFITS, user_.toString()], SEP)) {
+        case a:String =>
+            if a.size() > 0 then
+                FOLD<11>(split_51C(a, SEP), [], foldFunc)
+            else ZERO_INT_LIST_11
+        case _ => ZERO_INT_LIST_11
+    }
+}
+
+func _saveUserProfits(user_: Address, val_: List[Int]) = {
+    func foldFunc(acc: List[String], elem: Int) = {
+        acc :+ elem.toString()
+    }
+
+    [StringEntry(
+        makeString([KEY_USER_PROFITS, user_.toString()], SEP),
+        makeString_11C(FOLD<11>(val_, [], foldFunc), SEP)
+    )]
+}
+
+# ---------- Ownable functions ----------
+
+func _onlyThisContract(caller_: Address) = {
+    if caller_ != this then
+        throw("_onlyThisContract: revert")
+    else true
+}
+
+func _whenMultisigSet() = {
+    if _loadMultisig() == Address(base58'') then
+        throw("_whenMultisigSet: revert")
+    else true
+}
+
+# ---------- Initializable functions ----------
+
+func _whenNotInitialized() = {
+    let storage = _loadStorage()
+
+    if storage._1 != base58'' then
+        throw("_whenNotInitialized: revert")
+    else true
+}
+
+func _whenInitialized() = {
+    let storage = _loadStorage()
+
+    if storage._1 == base58'' then
+        throw("_whenInitialized: revert")
+    else true
+}
+
+# ---------- Pausable functions ----------
+
+func _whenNotPaused() = {
+    if _loadPause() then
+        throw("_whenNotPaused: revert")
+    else true
+}
+
+func _whenPaused() = {
+    if !_loadPause() then
+        throw("_whenPaused: revert")
+    else true
+}
+
+func _onlyPauser(caller_: Address) = {
+    if caller_ != _loadPauser() then
+        throw("_onlyPauser: revert")
+    else true
+}
+
+# ---------- Utils functions ----------
+
+func _getDecimals(assetId_: String) = {
+    match assetInfo(assetId_.fromBase58String()) {
+        case a:Asset => a.decimals
+        case _ => throw("_getDecimals: no asset=" + assetId_)
+    }
+}
+
+func _normalizeDecimals(amount_: Int, sourceDecimals_: Int, targetDecimals_: Int, round_: Down|Ceiling) = {
+    if sourceDecimals_ >= targetDecimals_ then
+        fraction(amount_, 1, pow(10, 0, sourceDecimals_ - targetDecimals_, 0, 0, DOWN), round_)
+    else
+        amount_ * pow(10, 0, targetDecimals_ - sourceDecimals_, 0, 0, DOWN)
+}
+
+func _prepareAssetBalances(assets_: List[String]) = {
+    func foldFunc(acc: List[Int], elem: String) = {
+        acc :+ 0
+    }
+
+    FOLD<10>(assets_, [], foldFunc)
+}
+
+func _prepareAssetWeights(assetWeights_: List[String]) = {
+    func foldFunc(acc: (List[Int], Int), elem: String) = {
+        let weight = elem.parseIntValue()
+
+        (acc._1 :+ weight, acc._2 + weight)
+    }
+
+    FOLD<10>(assetWeights_, ([], 0), foldFunc)
+}
+
+func _getAssetBalances(assets_: List[String], decimals_: Int) = {
+    func foldFunc(acc: (List[Int], Int), elem: String) = {
+        let assetDecimals = _getDecimals(elem)
+        let balance = assetBalance(this, elem.fromBase58String())._normalizeDecimals(assetDecimals, decimals_, DOWN)
+        (acc._1 :+ balance, acc._2 + balance)
+    }
+
+    FOLD<10>(assets_, ([], 0), foldFunc)
+}
+
+func _listIntToString(assets_: List[Int]) = {
+    func foldFunc(acc: List[String], elem: Int) = {
+        acc :+ elem.toString()
+    }
+
+    makeString(FOLD<11>(assets_, [], foldFunc), SEP)
+}
+
+func _listBigIntToString(assets_: List[BigInt]) = {
+    func foldFunc(acc: List[String], elem: BigInt) = {
+        acc :+ elem.toString()
+    }
+
+    makeString(FOLD<11>(assets_, [], foldFunc), SEP)
+}
+
+func _getEquilibriums(sigmaBalances_: Int, weights_: List[Int], sigmaWeight_: Int) = {
+    func foldFunc(acc: List[Int], elem: Int) = {
+        acc :+ fraction(sigmaBalances_, elem, sigmaWeight_)
+    }
+
+    FOLD<10>(weights_, [], foldFunc)
+}
+
+func _incrementBalancesByAmounts(balances_: List[Int], amounts_: List[Int]) = {
+    func foldFunc(acc: (Int, List[Int], Int), elem: Int) = {
+        let index = acc._1
+        let amount = amounts_.getElement(index)
+        let newBalance = elem + amount
+
+        (index + 1, acc._2 :+ newBalance, acc._3 + newBalance)
+    }
+
+    let result = FOLD<10>(balances_, (0, [], 0), foldFunc)
+
+    (result._2, result._3)
+}
+
+func _incrementBalancesByPayments(balances_: List[Int], payments_: List[AttachedPayment], assets_: List[String], decimals_: Int, err_: String) = {
+    func foldFunc(acc: (Int, List[Int], Int), elem: Int) = {
+        let index = acc._1
+        let payment = payments_.getElement(index)
+        let paymentAssetStr = payment.assetId._assetToStr()
+
+        strict err = if paymentAssetStr != assets_.getElement(index) then throw(err_ + ": index=" + index.toString()) else unit
+
+        let assetDecimals = paymentAssetStr._getDecimals()
+        let newBalance = elem + payments_.getElement(index).amount._normalizeDecimals(assetDecimals, decimals_, DOWN)
+
+        (index + 1, acc._2 :+ newBalance, acc._3 + newBalance)
+    }
+
+    let result = FOLD<10>(balances_, (0, [], 0), foldFunc)
+
+    (result._2, result._3)
+}
+
+func _incrementBalanceByIndex(balances_: List[Int], index_: Int, amount_: Int) = {
+    func foldFunc(acc: (Int, List[Int]), elem: Int) = {
+        let index = acc._1
+        if index == index_ then
+            (index + 1, acc._2 :+ (elem + amount_))
+        else
+            (index + 1, acc._2 :+ elem)
+    }
+
+    let result = FOLD<10>(balances_, (0, []), foldFunc)
+    result._2
+}
+
+func _decrementBalanceByIndex(balances_: List[Int], index_: Int, amount_: Int) = {
+    func foldFunc(acc: (Int, List[Int]), elem: Int) = {
+        let index = acc._1
+        if index == index_ then
+            (index + 1, acc._2 :+ (elem - amount_))
+        else
+            (index + 1, acc._2 :+ elem)
+    }
+
+    let result = FOLD<10>(balances_, (0, []), foldFunc)
+    result._2
+}
+
+func _decrementBalancesByLpAmount(balances_: List[Int], amount_: Int, lpTotalSupply_: Int) = {
+    let rate = fraction(lpTotalSupply_ - amount_, RATE_FACTOR, lpTotalSupply_, CEILING)
+
+    func foldFunc(acc: (List[Int], Int, List[Int]), elem: Int) = {
+        let newBalance = fraction(elem, rate, RATE_FACTOR, CEILING)
+        let deltaBalance = elem - newBalance
+
+        (acc._1 :+ newBalance, acc._2 + newBalance, acc._3 :+ deltaBalance)
+    }
+
+    FOLD<10>(balances_, ([], 0, []), foldFunc)
+}
+
+func _getPaymentsFromBalances(assets_: List[String], balances_: List[Int], recipient_: Address, sourceDecimals_: Int) = {
+    func foldFunc(acc: (Int, List[ScriptTransfer]), elem: String) = {
+        let index = acc._1
+        (
+            index + 1,
+            acc._2 :+ ScriptTransfer(
+                recipient_,
+                balances_.getElement(index)._normalizeDecimals(sourceDecimals_, elem._getDecimals(), DOWN),
+                elem._strToAsset()
+            )
+        )
+    }
+
+    let result = FOLD<10>(assets_, (0, []), foldFunc)
+    result._2
+}
+
+# ---------- Pool math functions ----------
+
+func _calculateMicroFee(balance_: Int, equilibrium_: Int, weightAmplifier_: Int, slippageRate_: Int, feeMaxRate_: Int) = {
+    if balance_ < equilibrium_ then
+        let threshold = fraction(equilibrium_, (MAX_WEIGHT_AMPLIFIER - weightAmplifier_), MAX_WEIGHT_AMPLIFIER)
+        if balance_ < threshold then
+            let maxDeviation = threshold - balance_
+            let feeRate = fraction(fraction(maxDeviation, slippageRate_, SLIPPAGE_RATE_FACTOR), FEE_RATE_FACTOR, equilibrium_)
+
+            if feeRate > feeMaxRate_ then
+                fraction(maxDeviation, feeMaxRate_, FEE_RATE_FACTOR)
+            else
+                fraction(maxDeviation, feeRate, FEE_RATE_FACTOR)
+        else 0
+    else
+        let threshold = fraction(equilibrium_, (MAX_WEIGHT_AMPLIFIER + weightAmplifier_), MAX_WEIGHT_AMPLIFIER)
+        if balance_ > threshold then
+            let maxDeviation = balance_ - threshold
+            let feeRate = fraction(fraction(maxDeviation, slippageRate_, SLIPPAGE_RATE_FACTOR), FEE_RATE_FACTOR, equilibrium_)
+
+            if feeRate > feeMaxRate_ then
+                fraction(maxDeviation, feeMaxRate_, FEE_RATE_FACTOR)
+            else
+                fraction(maxDeviation, feeRate, FEE_RATE_FACTOR)
+        else 0
+}
+
+func _calculateFee(
+    balances_: List[Int],
+    assetsTotalSupply_: Int,
+    weights_: List[Int],
+    sigmaWeight_: Int,
+    weightAmplifier_: Int,
+    slippageRate_: Int,
+    feeMaxRate_: Int
+) = {
+    func foldFunc(acc: (Int, Int), balance: Int) = {
+        let index = acc._1
+        let equilibrium = fraction(assetsTotalSupply_, weights_.getElement(index), sigmaWeight_)
+
+        (index + 1, acc._2 + _calculateMicroFee(balance, equilibrium, weightAmplifier_, slippageRate_, feeMaxRate_))
+    }
+
+    let result = FOLD<10>(balances_, (0, 0), foldFunc)
+    result._2
+}
+
+# ---------- Invariant functions ----------
+
+func _validateLiquidityInvariant(
+    prevAssetBalances_: List[Int],
+    prevAssetTotalSupply_: Int,
+    assetBalances_: List[Int],
+    assetTotalSupply_: Int,
+    prevLpTotalSupply_: Int,
+    lpTotalSupply_: Int,
+    assetWeights_: List[Int],
+    sigmaWeight_: Int,
+    weightAmplifier_: Int,
+    slippageRate_: Int,
+    feeMaxRate_: Int
+) = {
+    if prevLpTotalSupply_ == 0 || lpTotalSupply_ == 0 then true
+    else
+        let prevAssetsRate = fraction(
+            prevAssetTotalSupply_ - _calculateFee(
+                prevAssetBalances_,
+                prevAssetTotalSupply_,
+                assetWeights_,
+                sigmaWeight_,
+                weightAmplifier_,
+                slippageRate_,
+                feeMaxRate_
+            ),
+            RATE_FACTOR,
+            prevLpTotalSupply_
+        )
+        let newAssetsRate = fraction(
+            assetTotalSupply_ - _calculateFee(
+                assetBalances_,
+                assetTotalSupply_,
+                assetWeights_,
+                sigmaWeight_,
+                weightAmplifier_,
+                slippageRate_,
+                feeMaxRate_
+            ),
+            RATE_FACTOR,
+            lpTotalSupply_
+        )
+        let diff = newAssetsRate - prevAssetsRate
+        if diff <= 0 && diff < -1 * RATE_FACTOR then throw("_validateLiquidityInvariant: revert: diff=" + diff.toString()) else true
+}
+
+func _validateSwapInvariant(
+    prevAssetBalances_: List[Int],
+    prevAssetTotalSupply_: Int,
+    assetBalances_: List[Int],
+    assetTotalSupply_: Int,
+    assetWeights_: List[Int],
+    sigmaWeight_: Int,
+    weightAmplifier_: Int,
+    slippageRate_: Int,
+    feeMaxRate_: Int
+) = {
+    let prevUtil = prevAssetTotalSupply_ - _calculateFee(
+        prevAssetBalances_,
+        prevAssetTotalSupply_,
+        assetWeights_,
+        sigmaWeight_,
+        weightAmplifier_,
+        slippageRate_,
+        feeMaxRate_
+    )
+    let newUtil = assetTotalSupply_ - _calculateFee(
+        assetBalances_,
+        assetTotalSupply_,
+        assetWeights_,
+        sigmaWeight_,
+        weightAmplifier_,
+        slippageRate_,
+        feeMaxRate_
+    )
+    let diff = newUtil - prevUtil
+    if diff <= 0 && diff < -1 * RATE_FACTOR then throw("_validateSwapInvariant: revert: diff=" + diff.toString()) else true
+}
+
+func _validateAssetAllocation(balance_: Int, assetTotalSupply_: Int, prevBalance_: Int, prevAssetTotalSupply_: Int, weight_: Int, sigmaWeight_: Int, maxAllocAmp_: Int) = {
+    let equilibrium = fraction(assetTotalSupply_, weight_, sigmaWeight_)
+    let maxAllocationAmp = if balance_ > equilibrium then MAX_AMPLIFIER + maxAllocAmp_ else MAX_AMPLIFIER - maxAllocAmp_
+    let maxAllocation = fraction(equilibrium, maxAllocationAmp, MAX_AMPLIFIER)
+    let prevMaxAllocation = fraction(fraction(prevAssetTotalSupply_, weight_, sigmaWeight_), maxAllocationAmp, MAX_AMPLIFIER)
+
+    if balance_ > equilibrium then
+        if balance_ > maxAllocation then
+            if prevBalance_ < prevMaxAllocation then throw("_validateAssetAllocation: new up")
+            else if balance_ - maxAllocation > prevBalance_ - prevMaxAllocation then throw("_validateAssetAllocation: still up")
+            else true
+        else true
+    else
+        if balance_ < maxAllocation then
+            if prevBalance_ > prevMaxAllocation then throw("_validateAssetAllocation: new down")
+            else if maxAllocation - balance_ < prevMaxAllocation - prevBalance_ then throw("_validateAssetAllocation: still down")
+            else true
+        else true
+}
+
+func _validateAllocation(assetBalances_: List[Int], assetTotalSupply_: Int, prevAssetBalances_: List[Int], prevAssetTotalSupply_: Int, assetWeights_: List[Int], sigmaWeight_: Int, maxAllocAmp_: Int) = {
+    func foldFunc(acc: (Int, Boolean), elem: Int) = {
+        let index = acc._1
+
+        (index + 1, acc._2 && _validateAssetAllocation(
+            elem,
+            assetTotalSupply_,
+            prevAssetBalances_.getElement(index),
+            prevAssetTotalSupply_,
+            assetWeights_.getElement(index),
+            sigmaWeight_,
+            maxAllocAmp_
+        ))
+    }
+
+    let result = FOLD<10>(assetBalances_, (0, true), foldFunc)
+
+    result._2
+}
+
+# ---------- Staking math functions ----------
+
+func _checkpoint(user_: Address) = {
+    let userLp = _loadUserLp(user_)
+    let userProfits = _loadUserProfits(user_) 
+    let sigmaFeePerLp = _loadSigmaFeePerLp()
+    let userSigmaFeePerLp = _loadUserSigmaFeePerLp(user_)
+
+    func foldFunc(acc: (Int, List[Int]), elem: Int) = {
+        let index = acc._1
+        let profitUpdated = userProfits.getElement(index) + fraction(userLp.toBigInt(), (sigmaFeePerLp.getElement(index) - userSigmaFeePerLp.getElement(index)), PERCENT_FACTOR).toInt()
+
+        (index + 1, acc._2 :+ profitUpdated)
+    }
+
+    let (idx, profitsUpdated) = FOLD<11>(ZERO_INT_LIST_11, (0, []), foldFunc)
+
+    (
+        _saveUserProfits(user_, profitsUpdated) ++
+        _saveUserSigmaFeePerLp(user_, sigmaFeePerLp),
+        profitsUpdated
+    )
+}
+
+func _updateSigmaFeePerLp(sigmaFeePerLp_: List[BigInt], totalLp_: Int, index_: Int, lpFee_: Int) = {
+    func foldFunc(acc: (Int, List[BigInt]), elem: Int) = {
+        let index = acc._1
+
+        let sigmaFeePerLpUpdated =
+            if index_ == index then
+                sigmaFeePerLp_.getElement(index) + fraction(lpFee_.toBigInt(), PERCENT_FACTOR, totalLp_.toBigInt())
+            else
+                sigmaFeePerLp_.getElement(index)
+
+        (index + 1, acc._2 :+ sigmaFeePerLpUpdated)
+    }
+
+    let (idx, sigmaFeePerLpUpdated) = FOLD<11>(ZERO_INT_LIST_11, (0, []), foldFunc)
+    sigmaFeePerLpUpdated
+}
+
+func _calculateLpAndProtocolFees(assetIndex_: Int, amount_: Int, lpFeeRate_: Int, protocolFeeRate_: Int) = {
+    let sigmaFeePerLp = _loadSigmaFeePerLp()
+    let totalLp = _loadTotalLp()
+
+    let (lpFee, protocolFee) =
+        if totalLp == 0 then
+            (0, fraction(amount_, protocolFeeRate_, MAX_FEE))
+        else
+            (
+                fraction(amount_, lpFeeRate_, MAX_FEE),
+                fraction(amount_, protocolFeeRate_, MAX_FEE)
+            )
+
+    let sigmaFeePerLpUpdated =
+        if lpFee == 0 then
+            sigmaFeePerLp
+        else
+            _updateSigmaFeePerLp(sigmaFeePerLp, totalLp, assetIndex_, lpFee)
+
+    (lpFee, protocolFee, sigmaFeePerLpUpdated)
+}
+
+# ---------- Pool functions ----------
+
+func _depositAll(amount_: Int) = {
+    let storage = _loadStorage()
+    let lpTotalSupply = storage._3
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+
+    let assets = _loadAssets()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+    let (prevAssetBalances, prevAssetTotalSupply) = _loadAssetBalances()
+
+    let (lpTokensToMint, requiredAmountsNormalized) =
+        if prevAssetTotalSupply == 0 then
+            # deposit proportionaly to weights
+            func foldFunc(acc: (Int, List[Int]), elem: String) = {
+                let index = acc._1
+                let requiredAmountNormalized = fraction(assetWeights.getElement(index), amount_, sigmaWeight)
+                (index + 1, acc._2 :+ requiredAmountNormalized)
+            }
+
+            let (idx, requiredAmountsNormalized) = FOLD<10>(assets, (0, []), foldFunc)
+            (amount_, requiredAmountsNormalized)
+        else
+            # deposit proportionaly to balances
+            let ratio = fraction(amount_.toBigInt(), PERCENT_FACTOR, prevAssetTotalSupply.toBigInt())
+
+            func foldFunc1(acc: (Int, List[Int]), elem: String) = {
+                let index = acc._1
+                let requiredAmountNormalized = fraction(ratio, prevAssetBalances.getElement(index).toBigInt(), PERCENT_FACTOR).toInt()
+                (index + 1, acc._2 :+ requiredAmountNormalized)
+            }
+
+            let (idx, requiredAmountsNormalized) = FOLD<10>(assets, (0, []), foldFunc1)
+            (fraction(amount_, lpTotalSupply, prevAssetTotalSupply), requiredAmountsNormalized)
+
+    let (assetBalances, assetTotalSupply) = _incrementBalancesByAmounts(prevAssetBalances, requiredAmountsNormalized)
+    strict err2 = _validateLiquidityInvariant(
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        assetBalances,
+        assetTotalSupply,
+        lpTotalSupply,
+        lpTotalSupply + lpTokensToMint,
+        assetWeights,
+        sigmaWeight,
+        weightAmplifier,
+        slippageRate,
+        feeMaxRate
+    )
+
+    (lpTokensToMint, requiredAmountsNormalized, assetBalances)
+}
+
+func _deposit(assetId_: String, amount_: Int) = {
+    let storage = _loadStorage()
+    let lpTotalSupply = storage._3
+    let maxAllocAmplifier = storage._6
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+
+    let assets = _loadAssets()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+    let (prevAssetBalances, prevAssetTotalSupply) = _loadAssetBalances()
+
+    # increment balances by deposited amount
+    let assetBalances = _incrementBalanceByIndex(prevAssetBalances, assets.indexOf(assetId_).value(), amount_)
+    let assetTotalSupply = prevAssetTotalSupply + amount_
+
+    strict err2 = _validateAllocation(
+        assetBalances,
+        assetTotalSupply,
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        assetWeights,
+        sigmaWeight,
+        maxAllocAmplifier
+    )
+
+    let prevFee = _calculateFee(prevAssetBalances, prevAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+    let fee = _calculateFee(assetBalances, assetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+
+    let lpTokensToMint =
+        if lpTotalSupply == 0 then
+            assetTotalSupply - fee
+        else
+            let assetDiff = assetTotalSupply - prevAssetTotalSupply
+            let feeDiff = fee - prevFee
+            let utilityChangeFactor = fraction((assetDiff - feeDiff), RATE_FACTOR, (prevAssetTotalSupply - prevFee))
+            let lpTokensToMintInner = fraction(lpTotalSupply, utilityChangeFactor, RATE_FACTOR)
+            strict err3 = _validateLiquidityInvariant(
+                prevAssetBalances,
+                prevAssetTotalSupply,
+                assetBalances,
+                assetTotalSupply,
+                lpTotalSupply,
+                lpTotalSupply + lpTokensToMintInner,
+                assetWeights,
+                sigmaWeight,
+                weightAmplifier,
+                slippageRate,
+                feeMaxRate
+            )
+            lpTokensToMintInner
+
+    (lpTokensToMint, assetBalances)
+}
+
+func _withdrawAll(amount_: Int) = {
+    let storage = _loadStorage()
+    let lpTotalSupply = storage._3
+    let lpFeeRate = storage._4
+    let protocolFeeRate = storage._5
+    let maxAllocAmplifier = storage._6
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+
+    let (prevAssetBalances, prevAssetTotalSupply) = _loadAssetBalances()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+
+    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(0, amount_, lpFeeRate, protocolFeeRate)
+    let lpTokensToBurn = amount_ - lpFee - protocolFee
+    strict err = _validateInt(lpTokensToBurn, 0, MAX_INT, "_withdrawAll: lpTokensToBurn less than 0")
+
+    let (assetBalances, assetTotalSupply, balancesToPay) = _decrementBalancesByLpAmount(prevAssetBalances, lpTokensToBurn, lpTotalSupply)
+
+    strict err2 = _validateLiquidityInvariant(
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        assetBalances,
+        assetTotalSupply,
+        lpTotalSupply,
+        lpTotalSupply - lpTokensToBurn,
+        assetWeights,
+        sigmaWeight,
+        weightAmplifier,
+        slippageRate,
+        feeMaxRate
+    )
+
+    (lpTokensToBurn, balancesToPay, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated)
+}
+
+func _withdraw(assetId_: String, lpAmount_: Int) = {
+    let storage = _loadStorage()
+    let lpTotalSupply = storage._3
+    let lpFeeRate = storage._4
+    let protocolFeeRate = storage._5
+    let maxAllocAmplifier = storage._6
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+    let precision = _loadPrecision()
+
+    let assets = _loadAssets()
+    let (prevAssetBalances, prevAssetTotalSupply) = _loadAssetBalances()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+    let targetAssetIndex = assets.indexOf(assetId_).value()
+
+    let prevFee = _calculateFee(prevAssetBalances, prevAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+    let prevUtilValue = prevAssetTotalSupply - prevFee
+
+    let k = fraction((lpTotalSupply - lpAmount_).toBigInt(), PERCENT_FACTOR, lpTotalSupply.toBigInt())
+    let prevUtilValueWithK = fraction(prevUtilValue.toBigInt(), k, PERCENT_FACTOR).toInt()
+
+    # Find amount with bisection method
+    func foldFunc(acc: (Boolean, Int, Int, Int), elem: String) = {
+        if acc._1 then
+            acc
+        else
+            let startInner = acc._2
+            let stopInner = acc._3
+            let currentAmount = (stopInner + startInner) / 2
+
+            let tempAssetBalances = _decrementBalanceByIndex(prevAssetBalances, targetAssetIndex, currentAmount)
+            let tempAssetTotalSupply = prevAssetTotalSupply - currentAmount
+            let utilValue = tempAssetTotalSupply - _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+
+            if utilValue - prevUtilValueWithK < precision && utilValue - prevUtilValueWithK >= 0 then
+                (true, startInner, stopInner, currentAmount)
+            else if utilValue - prevUtilValueWithK < 0 then
+                (false, startInner, currentAmount, 0)
+            else
+                (false, currentAmount, stopInner, 0)
+    }
+
+    let targetAmount =
+        let targetAmount = lpAmount_
+        let tempAssetBalances = _decrementBalanceByIndex(prevAssetBalances, targetAssetIndex, targetAmount)
+        let tempAssetTotalSupply = prevAssetTotalSupply - targetAmount
+        let fee = _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+        let feeDiff = fee - prevFee
+        if feeDiff == 0 then
+            targetAmount
+        else
+            let (success, startOut, stopOut, targetAmountOut) = FOLD<64>(LIST_64, (false, 0, lpAmount_ + prevFee, 0), foldFunc)
+            if !success then
+                throw("_withdraw: can't calculate targetAmount="+targetAmountOut.toString())
+            else targetAmountOut
+
+    let finalAssetBalances = _decrementBalanceByIndex(prevAssetBalances, targetAssetIndex, targetAmount)
+    let finalAssetTotalSupply = prevAssetTotalSupply - targetAmount
+
+    strict err1 = _validateAllocation(
+        finalAssetBalances,
+        finalAssetTotalSupply,
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        assetWeights,
+        sigmaWeight,
+        maxAllocAmplifier
+    ) && _validateLiquidityInvariant(
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        finalAssetBalances,
+        finalAssetTotalSupply,
+        lpTotalSupply,
+        lpTotalSupply - lpAmount_,
+        assetWeights,
+        sigmaWeight,
+        weightAmplifier,
+        slippageRate,
+        feeMaxRate
+    )
+
+    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(targetAssetIndex + 1, targetAmount, lpFeeRate, protocolFeeRate)
+    (targetAmount, finalAssetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated)
+}
+
+func _swap(sourceAssetIndex_: Int, targetAssetIndex_: Int, sourceAmount_: Int) = {
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+    let lpTotalSupply = storage._3
+    let lpFeeRate = storage._4
+    let protocolFeeRate = storage._5
+    let maxAllocAmplifier = storage._6
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+    let precision = _loadPrecision()
+
+    let (prevAssetBalances, prevAssetTotalSupply) = _loadAssetBalances()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+
+    let assetBalances = _incrementBalanceByIndex(prevAssetBalances, sourceAssetIndex_, sourceAmount_)
+    let assetTotalSupply = prevAssetTotalSupply + sourceAmount_
+    let prevFee = _calculateFee(prevAssetBalances, prevAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+    let prevUtilValue = prevAssetTotalSupply - prevFee
+
+    # Find amount with bisection method
+    func foldFunc(acc: (Boolean, Int, Int, Int), elem: String) = {
+        if acc._1 then
+            acc
+        else
+            let startInner = acc._2
+            let stopInner = acc._3
+            let currentAmount = (stopInner + startInner) / 2
+
+            let tempAssetBalances = _decrementBalanceByIndex(assetBalances, targetAssetIndex_, currentAmount)
+            let tempAssetTotalSupply = assetTotalSupply - currentAmount
+            let utilValue = tempAssetTotalSupply - _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+
+            if utilValue - prevUtilValue < precision && utilValue - prevUtilValue >= 0 then
+                (true, startInner, stopInner, currentAmount)
+            else if utilValue - prevUtilValue < 0 then
+                (false, startInner, currentAmount, 0)
+            else
+                (false, currentAmount, stopInner, 0)
+    }
+
+    let targetAmount =
+        let targetAmount = sourceAmount_
+        let tempAssetBalances = _decrementBalanceByIndex(assetBalances, targetAssetIndex_, targetAmount)
+        let tempAssetTotalSupply = assetTotalSupply - targetAmount
+        let fee = _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+        let feeDiff = fee - prevFee
+        if feeDiff == 0 then
+            targetAmount
+        else
+            let (success, startOut, stopOut, targetAmountOut) = FOLD<64>(LIST_64, (false, 0, sourceAmount_ + prevFee, 0), foldFunc)
+            if !success then
+                throw("_swap: can't calculate targetAmount="+targetAmountOut.toString())
+            else targetAmountOut
+
+    let finalAssetBalances = _decrementBalanceByIndex(assetBalances, targetAssetIndex_, targetAmount)
+    let finalAssetTotalSupply = assetTotalSupply - targetAmount
+
+    strict err1 = _validateAllocation(
+        finalAssetBalances,
+        finalAssetTotalSupply,
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        assetWeights,
+        sigmaWeight,
+        maxAllocAmplifier
+    ) && _validateSwapInvariant(
+        prevAssetBalances,
+        prevAssetTotalSupply,
+        finalAssetBalances,
+        finalAssetTotalSupply,
+        assetWeights,
+        sigmaWeight,
+        weightAmplifier,
+        slippageRate,
+        feeMaxRate
+    )
+
+    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(targetAssetIndex_ + 1, targetAmount, lpFeeRate, protocolFeeRate)
+    (targetAmount, finalAssetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated)
+}
+
+# ---------- Public callable functions ----------
+
+@Callable(i)
+func init(
+    assets_: List[String],
+    assetWeights_: List[String],
+    lpFeeRate_: Int,
+    protocolFeeRate_: Int,
+    lpTokenName_: String,
+    lpTokenDescr_: String,
+    lpTokenDecimals_: Int,
+    maxAllocationAmplifier_: Int,
+    weightAmplifier_: Int,
+    slippageRate_: Int,
+    feeMaxRate_: Int,
+    protocolFeeContract_: String,
+    precision_: Int
+) = {
+    strict err =
+        _onlyThisContract(i.caller) &&
+        _whenNotInitialized() &&
+        _whenMultisigSet() &&
+        _validateAssets(assets_, "init: invalid assets") &&
+        _validateIntList(assetWeights_, 0, MAX_WEIGHT, "init: invalid assetWeights") &&
+        _validateIntEquals(assets_.size(), assetWeights_.size(), "init: invalid assetWeights size") &&
+        _validateInt(lpFeeRate_, 0, MAX_FEE, "init: invalid lp fee") &&
+        _validateInt(protocolFeeRate_, 0, MAX_FEE, "init: invalid protocol fee") &&
+        _validateTokenName(lpTokenName_, "init: invalid name") &&
+        _validateTokenDescr(lpTokenDescr_, "init: invalid descr") &&
+        _validateDecimals(lpTokenDecimals_, "init: invalid decimals") &&
+        _validateInt(maxAllocationAmplifier_, 0, MAX_AMPLIFIER, "init: invalid maxAllocationAmplifier") &&
+        _validateInt(weightAmplifier_, 0, maxAllocationAmplifier_, "init: invalid weightAmplifier") &&
+        _validateInt(slippageRate_, 0, MAX_INT, "init: invalid slippageRate") &&
+        _validateInt(feeMaxRate_, 0, MAX_INT, "init: invalid feeMaxRate") &&
+        _validateAddress(protocolFeeContract_, "init: invalid protocolFeeContract") &&
+        _validateInt(precision_, 0, MAX_INT, "init: invalid precision")
+
+    let (assetWeights, sigmaWeight) = _prepareAssetWeights(assetWeights_)
+    let assetBalances = _prepareAssetBalances(assets_)
+    let issue = Issue(lpTokenName_, lpTokenDescr_, 0, lpTokenDecimals_, true)
+    let lpAssetId = calculateAssetId(issue)
+
+    let storageUpdated = (
+        lpAssetId,                                          # lpAsset
+        true,                                               # unlocked
+        0,                                                  # lpTotalSupply
+        lpFeeRate_,                                         # lp fee rate
+        protocolFeeRate_,                                   # protocol fee rate
+        maxAllocationAmplifier_,                            # max allocation amplifier
+        weightAmplifier_,                                   # weight amplifier
+        slippageRate_,                                      # slippage rate
+        feeMaxRate_,                                        # fee max rate
+        protocolFeeContract_.addressFromStringValue()       # protocol fee contract
+    )
+
+    (
+        [issue] ++
+        _saveStorage(storageUpdated) ++
+        _saveAssets(assets_) ++
+        _saveAssetBalances(assetBalances) ++
+        _saveAssetWeights(assetWeights) ++
+        _savePrecision(precision_) ++
+        _saveSigmaFeePerLp(_loadSigmaFeePerLp()),
+        unit
+    )
+}
+
+@Callable(i)
+func depositAll(amount_: Int) = {
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused() &&
+        _validateInt(amount_, 0, MAX_INT, "depositAll: invalid amount")
+
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+    let assets = _loadAssets()
+
+    # here we consider amount_ has decimals=lpDecimals
+    let (lpTokensToMint, requiredAmountsNormalized, assetBalances) = _depositAll(amount_)
+
+    func foldFunc(acc: (Int, List[ScriptTransfer]), elem: String) = {
+        let index = acc._1
+        let paymentAssetStr = i.payments[index].assetId._assetToStr()
+        let paymentAssetDecimals = paymentAssetStr._getDecimals()
+        let requiredAmountNormalized = requiredAmountsNormalized.getElement(index)
+        let requiredAmount = requiredAmountNormalized._normalizeDecimals(lpDecimals, paymentAssetDecimals, CEILING)
+
+        strict err1 =
+            if paymentAssetStr != elem then throw("depositAll: invalid payment: index=" + index.toString())
+            else if requiredAmount <= 0 then throw("depositAll: too little amount required")
+            else unit
+
+        let change =
+            if i.payments[index].amount > requiredAmount then
+                [ScriptTransfer(i.caller, i.payments[index].amount - requiredAmount, i.payments[index].assetId)]
+            else if i.payments[index].amount < requiredAmount then
+                throw("depositAll: insufficient payment, index=" + index.toString() + ", required=" + requiredAmount.toString())
+            else []
+
+        (index + 1, acc._2 ++ change)
+    }
+
+    let (idx, changeActions) = FOLD<10>(assets, (0, []), foldFunc)
+
+    let storageUpdated = (
+        storage._1,
+        storage._2,
+        storage._3 + lpTokensToMint,
+        storage._4,
+        storage._5,
+        storage._6,
+        storage._7,
+        storage._8,
+        storage._9,
+        storage._10
+    )
+
+    (
+        [
+            Reissue(lpAssetId, lpTokensToMint, true),
+            ScriptTransfer(i.caller, lpTokensToMint, lpAssetId)
+        ] ++
+        _saveStorage(storageUpdated) ++
+        _saveAssetBalances(assetBalances) ++
+        changeActions,
+        unit
+    )
+}
+
+@Callable(i)
+func deposit(minLpAmount_: Int) = {
+    strict err = _validateInt(minLpAmount_, 0, MAX_INT, "deposit: invalid min lp amount")
+
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+
+    strict err1 =
+        _whenInitialized() &&
+        _whenNotPaused() &&
+        _validateIntEquals(i.payments.size(), 1, "deposit: invalid payments size") &&
+        _validateListContains(_loadAssets(), i.payments[0].assetId._assetToStr(), "deposit: invalid payment asset") &&
+        _validateInt(i.payments[0].amount, 0, MAX_INT, "deposit: invalid payment amount")
+
+    let assetStr = i.payments[0].assetId._assetToStr()
+    let assetDecimals = assetStr._getDecimals()
+    let amountNormalized = _normalizeDecimals(i.payments[0].amount, assetDecimals, lpDecimals, DOWN)
+
+    let (lpTokensToMint, assetBalances) = _deposit(assetStr, amountNormalized)
+
+    strict err2 = _validateInt(lpTokensToMint, minLpAmount_, MAX_INT, "deposit: less than min lp")
+
+    let storageUpdated = (
+        storage._1,
+        storage._2,
+        storage._3 + lpTokensToMint,
+        storage._4,
+        storage._5,
+        storage._6,
+        storage._7,
+        storage._8,
+        storage._9,
+        storage._10
+    )
+
+    (
+        [
+            Reissue(lpAssetId, lpTokensToMint, true),
+            ScriptTransfer(i.caller, lpTokensToMint, lpAssetId)
+        ] ++
+        _saveStorage(storageUpdated) ++
+        _saveAssetBalances(assetBalances),
+        unit
+    )
+}
+
+@Callable(i)
+func withdrawAll() = {
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpAssetIdStr = lpAssetId.toBase58String()
+    let lpDecimals = lpAssetIdStr._getDecimals()
+    let assets = _loadAssets()
+
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused() &&
+        _validateIntEquals(i.payments.size(), 1, "withdrawAll: invalid payments size") &&
+        _validateStringEqual(lpAssetIdStr, i.payments[0].assetId._assetToStr(), "withdrawAll: invalid payment asset") &&
+        _validateInt(i.payments[0].amount, 0, MAX_INT, "withdrawAll: invalid payment amount")
+
+    let (lpTokensToBurn, balancesToPay, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _withdrawAll(i.payments[0].amount)
+    let paymentActions = _getPaymentsFromBalances(assets, balancesToPay, i.caller, lpDecimals)
+
+    let storageUpdated = (
+        storage._1,
+        storage._2,
+        storage._3 - lpTokensToBurn,
+        storage._4,
+        storage._5,
+        storage._6,
+        storage._7,
+        storage._8,
+        storage._9,
+        storage._10
+    )
+
+    (
+        [Burn(lpAssetId, lpTokensToBurn)] ++
+        paymentActions ++
+        _saveStorage(storageUpdated) ++
+        _saveAssetBalances(assetBalances) ++
+        _saveLpFee(lpAssetIdStr, lpFee + _loadLpFee(lpAssetIdStr)) ++
+        _saveProtocolFee(lpAssetIdStr, protocolFee + _loadProtocolFee(lpAssetIdStr)) ++
+        _saveSigmaFeePerLp(sigmaFeePerLpUpdated),
+        unit
+    )
+}
+
+@Callable(i)
+func withdraw(assetId_: String, minAmount_: Int) = {
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpAssetIdStr = lpAssetId.toBase58String()
+    let lpDecimals = lpAssetIdStr._getDecimals()
+    let assets = _loadAssets()
+
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused() &&
+        _validateIntEquals(i.payments.size(), 1, "withdraw: invalid payments size") &&
+        _validateStringEqual(lpAssetIdStr, i.payments[0].assetId._assetToStr(), "withdraw: invalid payment asset") &&
+        _validateInt(i.payments[0].amount, 0, MAX_INT, "withdraw: invalid payment amount") &&
+        _validateListContains(assets, assetId_, "withdraw: invalid assetId") &&
+        _validateInt(minAmount_, 0, MAX_INT, "withdraw: invalid minAmount")
+
+    let (targetAmountNormalized, finalAssetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _withdraw(assetId_, i.payments[0].amount)
+    let finalAmountNormalized = targetAmountNormalized - lpFee - protocolFee
+    let targetDecimals = assetId_._getDecimals()
+    let finalAmount = finalAmountNormalized._normalizeDecimals(lpDecimals, targetDecimals, DOWN)
+    strict err1 = _validateInt(finalAmount, minAmount_, MAX_INT, "withdraw: insufficient final amount")
+
+    let storageUpdated = (
+        storage._1,
+        storage._2,
+        storage._3 - i.payments[0].amount,
+        storage._4,
+        storage._5,
+        storage._6,
+        storage._7,
+        storage._8,
+        storage._9,
+        storage._10
+    )
+
+    (
+        [
+            Burn(lpAssetId, i.payments[0].amount),
+            ScriptTransfer(i.caller, finalAmount, assetId_._strToAsset())
+        ] ++
+        _saveStorage(storageUpdated) ++
+        _saveAssetBalances(finalAssetBalances) ++
+        _saveLpFee(assetId_, lpFee + _loadLpFee(assetId_)) ++
+        _saveProtocolFee(assetId_, protocolFee + _loadProtocolFee(assetId_)) ++
+        _saveSigmaFeePerLp(sigmaFeePerLpUpdated),
+        unit
+    )
+}
+
+@Callable(i)
+func swap(targetAssetId_: String, minAmount_: Int) = {
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+    let assets = _loadAssets()
+
+    let sourceAssetStr = i.payments[0].assetId._assetToStr()
+    let sourceAmountNormalized = _normalizeDecimals(i.payments[0].amount, sourceAssetStr._getDecimals(), lpDecimals, DOWN)
+    strict sourceAssetIndex = assets.indexOf(sourceAssetStr).valueOrErrorMessage("swap: invalid source asset")
+    strict targetAssetIndex = assets.indexOf(targetAssetId_).valueOrErrorMessage("swap: invalid target asset")
+
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused() &&
+        _validateInt(minAmount_, 0, MAX_INT, "swap: invalid min target amount") &&
+        _validateInt(sourceAmountNormalized, 0, MAX_INT, "swap: invalid source amount") &&
+        _validateStringNotEq(sourceAssetStr, targetAssetId_, "swap: same assets") &&
+        _validateIntEquals(i.payments.size(), 1, "swap: invalid payments size")
+
+    let (targetAmountNormalized, finalAssetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _swap(sourceAssetIndex, targetAssetIndex, sourceAmountNormalized)
+    let finalAmountNormalized = targetAmountNormalized - lpFee - protocolFee
+    let targetDecimals = targetAssetId_._getDecimals()
+    let finalAmount = finalAmountNormalized._normalizeDecimals(lpDecimals, targetDecimals, DOWN)
+    strict err1 = _validateInt(finalAmount, minAmount_, MAX_INT, "swap: insufficient final amount")
+
+    (
+        [ScriptTransfer(i.caller, finalAmount, targetAssetId_._strToAsset())] ++
+        _saveAssetBalances(finalAssetBalances) ++
+        _saveLpFee(targetAssetId_, lpFee + _loadLpFee(targetAssetId_)) ++
+        _saveProtocolFee(targetAssetId_, protocolFee + _loadProtocolFee(targetAssetId_)) ++
+        _saveSigmaFeePerLp(sigmaFeePerLpUpdated),
+        unit
+    )
+}
+
+# ---------- Public readonly callable functions ----------
+
+# ARGS
+    # lpAmount_ - LP tokens to get after depositAll()
+# RETURNS
+    # lpTokensToMint - LP tokens we get after depositAll()
+    # requiredAmountsNormalized - all tokens we required to pay in deposit() (in LP decimals)
+@Callable(i)
+func getDepositAll(lpAmount_: Int) = {
+    strict err = _validateInt(lpAmount_, 0, MAX_INT, "getDepositAll: invalid amount")
+    let (lpTokensToMint, requiredAmountsNormalized, assetBalances) = _depositAll(lpAmount_)
+
+    ([], (lpTokensToMint, requiredAmountsNormalized))
+}
+
+# ARGS
+    # assetId_ - base58 asset string from payment[0] in deposit()
+    # amount_ - amount from payment[0] in deposit()
+# RETURNS
+    # lpTokensToMint - LP tokens we get after deposit()
+@Callable(i)
+func getDeposit(assetId_: String, amount_: Int) = {
+    strict err =
+        _validateListContains(_loadAssets(), assetId_, "getDeposit: invalid asset") &&
+        _validateInt(amount_, 0, MAX_INT, "getDeposit: invalid amount")
+
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+    let assetDecimals = assetId_._getDecimals()
+    let amountNormalized = _normalizeDecimals(amount_, assetDecimals, lpDecimals, DOWN)
+    let (lpTokensToMint, assetBalances) = _deposit(assetId_, amountNormalized)
+
+    ([], lpTokensToMint)
+}
+
+# ARGS
+    # lpAmount_ - LP tokens amount from payment[0] in withdrawAll() (which we want to withdraw)
+# RETURNS
+    # balancesToGet - all token balances we get after withdrawAll() (in LP decimals each)
+@Callable(i)
+func getWithdrawAll(lpAmount_: Int) = {
+    strict err = _validateInt(lpAmount_, 0, MAX_INT, "getWithdrawAll: invalid amount")
+    let (lpTokensToBurn, balancesToGet, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _withdrawAll(lpAmount_)
+
+    ([], balancesToGet)
+}
+
+# ARGS
+    # assetId_ - base58 asset string which we want to get after withdraw()
+    # lpAmount_ - amount of LP tokens which we want to pay in withdraw()
+# RETURNS
+    # finalAmount - assetId_ tokens we get after withdraw() (in asset decimals)
+@Callable(i)
+func getWithdraw(assetId_: String, amount_: Int) = {
+    strict err =
+        _validateListContains(_loadAssets(), assetId_, "getWithdraw: invalid asset") &&
+        _validateInt(amount_, 0, MAX_INT, "getWithdraw: invalid amount")
+
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+
+    let (targetAmountNormalized, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _withdraw(assetId_, amount_)
+    let finalAmountNormalized = targetAmountNormalized - lpFee - protocolFee
+    let targetDecimals = assetId_._getDecimals()
+    let finalAmount = finalAmountNormalized._normalizeDecimals(lpDecimals, targetDecimals, DOWN)
+
+    ([], finalAmount)
+}
+
+# ARGS
+    # sourceAssetId_ - base58 asset string which we pay for swap() in payments[0]
+    # targetAssetId_ - base58 asset string which we want to get after swap()
+    # sourceAmount_ - amount of sourceAssetId_ tokens we pay for swap() in payments[0]
+# RETURNS
+    # finalAmount - amount of targetAssetId_ tolens which we want to get after swap() (in asset decimals)
+@Callable(i)
+func getSwap(sourceAssetId_: String, targetAssetId_: String, sourceAmount_: Int) = {
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+    let assets = _loadAssets()
+
+    strict sourceAssetIndex = assets.indexOf(sourceAssetId_).valueOrErrorMessage("swap: invalid source asset")
+    strict targetAssetIndex = assets.indexOf(targetAssetId_).valueOrErrorMessage("swap: invalid target asset")
+    
+    let sourceAmountNormalized = _normalizeDecimals(sourceAmount_, sourceAssetId_._getDecimals(), lpDecimals, DOWN)
+    strict err =
+        _validateInt(sourceAmountNormalized, 0, MAX_INT, "swap: invalid source amount") &&
+        _validateStringNotEq(sourceAssetId_, targetAssetId_, "swap: same assets")
+
+    let (targetAmountNormalized, finalAssetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _swap(sourceAssetIndex, targetAssetIndex, sourceAmountNormalized)
+    let finalAmountNormalized = targetAmountNormalized - lpFee - protocolFee
+    let targetDecimals = targetAssetId_._getDecimals()
+    let finalAmount = finalAmountNormalized._normalizeDecimals(lpDecimals, targetDecimals, DOWN)
+
+    ([], finalAmount)
+}
+
+# ARGS
+    # user_ - user string which we want to get claimable balances for
+# RETURNS
+    # userProfits: [lp_asset, ASSETS] - array of amounts (in asset decimals) user can claim()
+@Callable(i)
+func getClaim(user_: String) = {
+    let user =
+        if user_.size() > 0 then
+            user_.addressFromString().valueOrErrorMessage("getClaim: invalid user")
+        else i.caller
+
+    let (checkpointActions, userProfits) = _checkpoint(user)
+
+    ([], userProfits)
+}
+
+# RETURNS
+    # utilValue: utility function value
+    # lpTotalSupply: lp total supply minted
+@Callable(i)
+func getUtilFunc() = {
+    let storage = _loadStorage()
+    let lpTotalSupply = storage._3
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+
+    let (assetBalances, assetTotalSupply) = _loadAssetBalances()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+    let fee = _calculateFee(assetBalances, assetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+    let utilValue = assetTotalSupply - fee
+
+    ([], (utilValue, lpTotalSupply))
+}
+
+# ---------- Public staking callable functions ----------
+
+@Callable(i)
+func checkpoint(user_: String) = {
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused()
+
+    let user =
+        if user_.size() > 0 then
+            user_.addressFromString().valueOrErrorMessage("checkpoint: invalid user")
+        else i.caller
+
+    _checkpoint(user)
+}
+
+@Callable(i)
+func stake() = {
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused()
+
+    let storage = _loadStorage()
+    let lpAssetIdStr = storage._1._assetToStr()
+
+    strict err1 =
+        _validateIntEquals(i.payments.size(), 1, "stake: invalid payments size") &&
+        _validateStringEqual(lpAssetIdStr, i.payments[0].assetId._assetToStr(), "stake: invalid payment asset") &&
+        _validateInt(i.payments[0].amount, 0, MAX_INT, "stake: invalid payment amount")
+
+    let (checkpointActions, userProfits) = _checkpoint(i.caller)
+
+    (
+        checkpointActions ++
+        _saveUserLp(i.caller, _loadUserLp(i.caller) + i.payments[0].amount) ++
+        _saveTotalLp(_loadTotalLp() + i.payments[0].amount),
+        unit
+    )
+}
+
+@Callable(i)
+func unstake(amount_: Int) = {
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused()
+
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let userLp = _loadUserLp(i.caller)
+
+    strict err1 =
+        _validateInt(amount_, 0, userLp, "unstake: invalid amount")
+
+    let (checkpointActions, userProfits) = _checkpoint(i.caller)
+
+    (
+        [ScriptTransfer(i.caller, amount_, lpAssetId)] ++
+        checkpointActions ++
+        _saveUserLp(i.caller, userLp - amount_) ++
+        _saveTotalLp(_loadTotalLp() - amount_),
+        unit
+    )
+}
+
+@Callable(i)
+func claim(user_: String, assets_: List[String]) = {
+    strict err =
+        _whenInitialized() &&
+        _whenNotPaused() &&
+        _validateInt(assets_.size(), 1, 10, "claim: invalid assets size")
+
+    let user =
+        if user_.size() > 0 then
+            user_.addressFromString().valueOrErrorMessage("claim: invalid user")
+        else i.caller
+
+    let storage = _loadStorage()
+    let lpAssetId = storage._1
+    let lpAssetIdStr = lpAssetId._assetToStr()
+    let assets = cons(lpAssetIdStr, _loadAssets())
+    let maxIndex = assets.size() - 1
+    let userLp = _loadUserLp(user)
+
+    let (checkpointActions, userProfits) = _checkpoint(user)
+
+    func foldFunc(acc: (Int, List[Int], List[ScriptTransfer]), profit: Int) = {
+        let index = acc._1
+        if index > maxIndex then
+            (index + 1, acc._2 :+ profit, acc._3)
+        else
+            let asset = assets.getElement(index)
+            if assets_.containsElement(asset) then
+                (index + 1, acc._2 :+ 0, acc._3 :+ ScriptTransfer(user, profit, asset._strToAsset()))
+            else
+                (index + 1, acc._2 :+ profit, acc._3)
+    }
+
+    let (idx, userProfitsUpdated, profitActions) = FOLD<11>(userProfits, (0, [], []), foldFunc)
+
+    (
+        profitActions ++
+        checkpointActions.removeByIndex(0) ++
+        _saveUserProfits(user, userProfitsUpdated),
+        unit
+    )
+}
+
+@Callable(i)
+func pause() = {
+    strict err =
+        _onlyPauser(i.caller) &&
+        _whenInitialized() &&
+        _whenNotPaused()
+
+    (_savePause(true), unit)
+}
+
+@Callable(i)
+func unpause() = {
+    strict err =
+        _onlyPauser(i.caller) &&
+        _whenInitialized() &&
+        _whenPaused()
+
+    (_savePause(false), unit)
+}
+
+@Callable(i)
+func updatePauser(pauser_: String) = {
+    strict err =
+        _onlyThisContract(i.caller) &&
+        _whenInitialized() &&
+        _validateAddress(pauser_, "updatePauser: invalid pauser")
+
+    (_savePauser(addressFromStringValue(pauser_)), unit)
+}
+
+@Callable(i)
+func setMultisig(multisig_: String) = {
+    strict err =
+        _onlyThisContract(i.caller) &&
+        _validateAddress(multisig_, "setMultisig: invalid multisig")
+
+    (_saveMultisig(addressFromStringValue(multisig_)), unit)
+}
+
+@Verifier(tx)
+func verify() = {
+    match getString(KEY_MULTISIG) {
+        case multisig: String => 
+            multisig
+                .addressFromStringValue()
+                .getBoolean(makeString([KEY_STATUS, this.toString(), tx.id.toBase58String()], SEP))
+                .valueOrElse(false)
+        case _ => sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)
+    }
+}

@@ -1,0 +1,385 @@
+{-# STDLIB_VERSION 6 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+# ---------- Constants ----------
+
+let SEP = "__"
+let WAVES = "waves"
+let MIN_INT = -9223372036854775808
+let MAX_INT = 9223372036854775807
+let MIN_TICK = -414486
+let MAX_TICK = -MIN_TICK
+let TICK_INDEX_SIZE = 1000
+let MIN_SQRT_RATIO = parseBigIntValue("1")
+let MAX_SQRT_RATIO =  parseBigIntValue("999996034266679907751935378141784045")
+let BASE = 10001.toBigInt()
+let BASE_DECIMALS = 4
+let INT_DECIMALS = 8
+let BIGINT_DECIMALS = 18
+let PRICE_RATE = parseBigIntValue("1000000000000000000")
+let MAX_FEE = 1000000
+
+let KEY_STORAGE = "STORAGE"
+
+let ZERO_INDEX_100 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+let ZERO_INDEX_900 = 
+    ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+
+let ZERO_INDEX_1000 = ZERO_INDEX_900 + ZERO_INDEX_100
+
+# ---------- Math functions ----------
+
+func _sumPositiveUnderflow(liquidityGrossBefore_: Int, liquidityDelta_: Int) = {
+    let res = liquidityGrossBefore_ + liquidityDelta_
+    if res < 0 then throw("LS/LA") else res
+}
+
+func _abs(val_: Int) = {
+    if val_ < 0 then val_ * (-1)
+    else val_
+}
+
+func _getSqrtRatioAtTick(tick_: Int) = {
+    if _abs(tick_) > MAX_TICK then throw("invalid tick")
+    else pow(BASE, BASE_DECIMALS, tick_.toBigInt(), 0, BIGINT_DECIMALS, DOWN)
+}
+
+func _getTickAtSqrtRatio(ratio_: BigInt) = {
+    log(BASE, BASE_DECIMALS, ratio_, BIGINT_DECIMALS, 0, DOWN)
+}
+
+func _getAmount0DeltaInner(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity_: Int,
+    roundUp_: Boolean
+) = {
+    let sorted =
+        if sqrtRatioA_ > sqrtRatioB_ then
+            (sqrtRatioB_, sqrtRatioA_)
+        else
+            (sqrtRatioA_, sqrtRatioB_)
+    
+    let numerator = sorted._2 - sorted._1
+
+    strict err = if sorted._1 <= 0.toBigInt() then throw("sorted._1 <= 0") else unit
+
+    if roundUp_ then
+        fraction(fraction(liquidity_.toBigInt(), numerator, sorted._2, CEILING), 1.toBigInt(), sorted._1, CEILING) # QA: over/underflow - need to check it
+    else
+        fraction(liquidity_.toBigInt(), numerator, sorted._2, FLOOR) / sorted._1
+}
+
+func _getAmount1DeltaInner(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity_: Int,
+    roundUp_: Boolean
+) = {
+    let sorted =
+        if sqrtRatioA_ > sqrtRatioB_ then
+            (sqrtRatioB_, sqrtRatioA_)
+        else
+            (sqrtRatioA_, sqrtRatioB_)
+    
+    if roundUp_ then
+        fraction(liquidity_.toBigInt(), sorted._2 - sorted._1, 1.toBigInt(), CEILING) / PRICE_RATE  # QA: over/underflow - need to check it
+    else
+        fraction(liquidity_.toBigInt(), sorted._2 - sorted._1, 1.toBigInt(), FLOOR) / PRICE_RATE # QA: over/underflow - need to check it
+}
+
+func _getAmount0Delta(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity_: Int
+) = {
+    if liquidity_ < 0 then
+        -1 * toInt(_getAmount0DeltaInner(sqrtRatioA_, sqrtRatioB_, -1 * liquidity_, false))
+    else
+        toInt(_getAmount0DeltaInner(sqrtRatioA_, sqrtRatioB_, liquidity_, true))
+}
+
+func _getAmount1Delta(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity: Int
+) = {
+    if liquidity < 0 then
+        -1 * toInt(_getAmount1DeltaInner(sqrtRatioA_, sqrtRatioB_, -1 * liquidity, false))
+    else
+        toInt(_getAmount1DeltaInner(sqrtRatioA_, sqrtRatioB_, liquidity, true))
+}
+
+func _getNextSqrtPriceFromAmount0RoundingUp(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amount_: Int,
+    add_: Boolean
+) = {
+    if amount_ == 0 then sqrtPrice_
+    else
+        if add_ then
+            let product = amount_.toBigInt() * sqrtPrice_
+            if product / amount_.toBigInt() == sqrtPrice_ then
+                let denominator = liquidity_.toBigInt() + product
+                    if denominator >= liquidity_.toBigInt() then
+                        fraction(liquidity_.toBigInt(), 1.toBigInt(), sqrtPrice_, CEILING)
+                    else
+                        fraction(liquidity_.toBigInt(), 1.toBigInt(), (liquidity_.toBigInt() / sqrtPrice_) + amount_.toBigInt(), CEILING)
+            else fraction(liquidity_.toBigInt(), 1.toBigInt(), (liquidity_.toBigInt() / sqrtPrice_) + amount_.toBigInt(), CEILING)
+        else
+            let product = amount_.toBigInt() * sqrtPrice_
+            let denominator = liquidity_.toBigInt() - product
+            fraction(liquidity_.toBigInt(), sqrtPrice_, sqrtPrice_, CEILING)
+}
+
+func _getNextSqrtPriceFromAmount1RoundingDown(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amount_: Int,
+    add_: Boolean
+) = {
+    if add_ then
+        sqrtPrice_ + (amount_ / liquidity_).toBigInt()
+    else
+        sqrtPrice_ - fraction(amount_.toBigInt(), 1.toBigInt(), liquidity_.toBigInt(), CEILING)
+}
+
+func _getNextSqrtPriceFromInput(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amountIn_: Int,
+    zeroForOne_: Boolean
+) = {
+    strict err =
+        if sqrtPrice_ <= 0.toBigInt() then
+            throw("sqrtPrice <= 0")
+        else if liquidity_ <= 0 then
+            throw("liquidity <= 0")
+        else unit
+
+    if zeroForOne_ then
+        _getNextSqrtPriceFromAmount0RoundingUp(sqrtPrice_, liquidity_, amountIn_, true)
+    else
+        _getNextSqrtPriceFromAmount1RoundingDown(sqrtPrice_, liquidity_, amountIn_, true)
+}
+
+func _getNextSqrtPriceFromOutput(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amountOut_: Int,
+    zeroForOne_: Boolean
+) = {
+    strict err =
+        if sqrtPrice_ <= 0.toBigInt() then
+            throw("sqrtPrice <= 0")
+        else if liquidity_ <= 0 then
+            throw("liquidity <= 0")
+        else unit
+
+    if zeroForOne_ then
+        _getNextSqrtPriceFromAmount1RoundingDown(sqrtPrice_, liquidity_, amountOut_, false)
+    else
+        _getNextSqrtPriceFromAmount0RoundingUp(sqrtPrice_, liquidity_, amountOut_, false)
+}
+
+# ---------- Wrapped math ----------
+
+@Callable(i)
+func sumPositiveUnderflow(liquidityGrossBefore_: Int, liquidityDelta_: Int) = {
+    let result = _sumPositiveUnderflow(liquidityGrossBefore_, liquidityDelta_)
+    (
+        [
+            IntegerEntry("SUM_POSITIVE_UNDERFLOW", result)
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func abs(val_: Int) = {
+    let result = _abs(val_)
+    (
+        [
+            IntegerEntry("ABS", result)
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getSqrtRatioAtTick(tick_: Int) = {
+    let result = _getSqrtRatioAtTick(tick_)
+    (
+        [
+            StringEntry("SQRT_RATIO_AT_TICK", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getTickAtSqrtRatio(ratio_: String) = {
+    let ratioBigInt = parseBigIntValue(ratio_).valueOrErrorMessage("invalid ratio")
+    let result = _getTickAtSqrtRatio(ratioBigInt)
+    (
+        [
+            StringEntry("TICK_AT_SQRT_RATIO", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getAmount0DeltaInner(
+    sqrtRatioA_: String,
+    sqrtRatioB_: String,
+    liquidity_: Int,
+    roundUp_: Boolean
+) = {
+    let ratioA_ = parseBigIntValue(sqrtRatioA_).valueOrErrorMessage("invalid sqrtRatioA_")
+    let ratioB_ = parseBigIntValue(sqrtRatioB_).valueOrErrorMessage("invalid sqrtRatioB_")
+    let result = _getAmount0DeltaInner(ratioA_, ratioB_, liquidity_, roundUp_)
+    (
+        [
+            StringEntry("AMOUNT_0_DELTA_INNER", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getAmount1DeltaInner(
+    sqrtRatioA_: String,
+    sqrtRatioB_: String,
+    liquidity_: Int,
+    roundUp_: Boolean
+) = {
+    let ratioA_ = parseBigIntValue(sqrtRatioA_).valueOrErrorMessage("invalid sqrtRatioA_")
+    let ratioB_ = parseBigIntValue(sqrtRatioB_).valueOrErrorMessage("invalid sqrtRatioB_")
+    let result = _getAmount1DeltaInner(ratioA_, ratioB_, liquidity_, roundUp_)
+    (
+        [
+            StringEntry("AMOUNT_1_DELTA_INNER", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getAmount0Delta(
+    sqrtRatioA_: String,
+    sqrtRatioB_: String,
+    liquidity_: Int
+) = {
+    let ratioA_ = parseBigIntValue(sqrtRatioA_).valueOrErrorMessage("invalid sqrtRatioA_")
+    let ratioB_ = parseBigIntValue(sqrtRatioB_).valueOrErrorMessage("invalid sqrtRatioB_")
+    let result = _getAmount0Delta(ratioA_, ratioB_, liquidity_)
+    (
+        [
+            IntegerEntry("AMOUNT_0_DELTA", result)
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getAmount1Delta(
+    sqrtRatioA_: String,
+    sqrtRatioB_: String,
+    liquidity: Int
+) = {
+    let ratioA_ = parseBigIntValue(sqrtRatioA_).valueOrErrorMessage("invalid sqrtRatioA_")
+    let ratioB_ = parseBigIntValue(sqrtRatioB_).valueOrErrorMessage("invalid sqrtRatioB_")
+    let result = _getAmount1Delta(ratioA_, ratioB_, liquidity)
+    (
+        [
+            IntegerEntry("AMOUNT_1_DELTA", result)
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getNextSqrtPriceFromAmount0RoundingUp(
+    sqrtPrice_: String,
+    liquidity_: Int,
+    amount_: Int,
+    add_: Boolean
+) = {
+    let price_ = parseBigIntValue(sqrtPrice_).valueOrErrorMessage("invalid sqrtPrice_")
+    let result = _getNextSqrtPriceFromAmount0RoundingUp(price_, liquidity_, amount_, add_)
+    (
+        [
+            StringEntry("NEXT_SQRT_PRICE_FROM_AMOUNT_0_ROUNDING_UP", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getNextSqrtPriceFromAmount1RoundingDown(
+    sqrtPrice_: String,
+    liquidity_: Int,
+    amount_: Int,
+    add_: Boolean
+) = {
+    let price_ = parseBigIntValue(sqrtPrice_).valueOrErrorMessage("invalid sqrtPrice_")
+    let result = _getNextSqrtPriceFromAmount1RoundingDown(price_, liquidity_, amount_, add_)
+    (
+        [
+            StringEntry("NEXT_SQRT_PRICE_FROM_AMOUNT_1_ROUNDING_DOWN", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getNextSqrtPriceFromInput(
+    sqrtPrice_: String,
+    liquidity_: Int,
+    amountIn_: Int,
+    zeroForOne_: Boolean
+) = {
+    let price_ = parseBigIntValue(sqrtPrice_).valueOrErrorMessage("invalid sqrtPrice_")
+    let result = _getNextSqrtPriceFromInput(price_, liquidity_, amountIn_, zeroForOne_)
+    (
+        [
+            StringEntry("NEXT_SQRT_PRICE_FROM_INPUT", result.toString())
+        ],
+        unit
+    )
+}
+
+@Callable(i)
+func getNextSqrtPriceFromOutput(
+    sqrtPrice_: String,
+    liquidity_: Int,
+    amountOut_: Int,
+    zeroForOne_: Boolean
+) = {
+    let price_ = parseBigIntValue(sqrtPrice_).valueOrErrorMessage("invalid sqrtPrice_")
+    let result = _getNextSqrtPriceFromOutput(price_, liquidity_, amountOut_, zeroForOne_)
+    (
+        [
+            StringEntry("NEXT_SQRT_PRICE_FROM_OUTPUT", result.toString())
+        ],
+        unit
+    )
+}
+
+# ---------- Verifier ----------
+
+@Verifier(tx)
+func verify() = {
+    sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)
+}

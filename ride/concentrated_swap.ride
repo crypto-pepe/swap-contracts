@@ -1,0 +1,1378 @@
+{-# STDLIB_VERSION 6 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+### TODO: create protocol fee collection 
+### TODO: create flash loans
+
+# ---------- Constants ----------
+
+let SEP = "__"
+let WAVES = "waves"
+let MIN_INT = -9223372036854775808
+let MAX_INT = 9223372036854775807
+let MIN_TICK = -414486
+let MAX_TICK = -MIN_TICK
+let TICK_INDEX_SIZE = 1000
+let MIN_SQRT_RATIO = parseBigIntValue("1")
+let MAX_SQRT_RATIO =  parseBigIntValue("999996034266679907751935378141784045")
+let BASE = 10001.toBigInt()
+let BASE_DECIMALS = 4
+let INT_DECIMALS = 8
+let BIGINT_DECIMALS = 18
+let PRICE_RATE = parseBigIntValue("1000000000000000000")
+let MAX_FEE = 1000000
+
+let KEY_STORAGE = "STORAGE"
+
+let ZERO_INDEX_100 = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+let ZERO_INDEX_900 = 
+    ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+    + ZERO_INDEX_100
+
+let ZERO_INDEX_1000 = ZERO_INDEX_900 + ZERO_INDEX_100
+
+# ---------- Validation functions ----------
+
+func _validateAddress(address_: String, err_: String) = {
+    match addressFromString(address_) {
+        case a:Address => true
+        case _ => throw(err_)
+    }
+}
+
+func _validateAsset(assetId_: String, err_: String) = {
+    if assetId_ == WAVES then true
+    else match assetInfo(fromBase58String(assetId_)) {
+        case a:Asset => true
+        case _ => throw(err_)
+    }
+}
+
+func _validateInt(val_: Int, lowerBoundary_: Int, upperBoundary_: Int, err_: String) = {
+    if val_ < lowerBoundary_ || val_ > upperBoundary_ then
+        throw(err_)
+    else true
+}
+
+func _validateBool(val_: Boolean, target_: Boolean, err_: String) = {
+    if val_ != target_ then
+        throw(err_)
+    else true
+}
+
+func _validateTicks(tickLower_: Int, tickUpper_: Int, err_: String) = {
+    if tickLower_ >= tickUpper_ then throw(err_+": L>U")
+    else if tickLower_ < MIN_TICK then throw(err_+": L<M")
+    else if tickUpper_ > MAX_TICK then throw(err_+": U>M")
+    else true
+}
+
+# ---------- Converting functions ----------
+
+func _assetToStr(asset_: ByteVector|Unit) = {
+    match asset_ {
+        case a: ByteVector => toBase58String(a)
+        case _ => WAVES
+    }
+}
+
+func _strToAsset(asset_: String) = {
+    if asset_ == WAVES || asset_ == "" then unit
+    else fromBase58String(asset_)
+}
+
+func _asInt(v: Any) = {
+    match v {
+        case a:Int => a
+        case _ => throw("asInt: revert")
+    }
+}
+
+# ---------- Math functions ----------
+
+func _sumPositiveUnderflow(liquidityGrossBefore_: Int, liquidityDelta_: Int) = {
+    let res = liquidityGrossBefore_ + liquidityDelta_
+    if res < 0 then throw("LS/LA") else res
+}
+
+func _abs(val_: Int) = {
+    if val_ < 0 then val_ * (-1)
+    else val_
+}
+
+func _getSqrtRatioAtTick(tick_: Int) = {
+    if _abs(tick_) > MAX_TICK then throw("invalid tick")
+    else pow(BASE, BASE_DECIMALS, tick_.toBigInt(), 0, BIGINT_DECIMALS, DOWN)
+}
+
+func _getTickAtSqrtRatio(ratio_: BigInt) = {
+    log(BASE, BASE_DECIMALS, ratio_, BIGINT_DECIMALS, 0, DOWN)
+}
+
+func _getAmount0DeltaInner(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity_: Int,
+    roundUp_: Boolean
+) = {
+    let sorted =
+        if sqrtRatioA_ > sqrtRatioB_ then
+            (sqrtRatioB_, sqrtRatioA_)
+        else
+            (sqrtRatioA_, sqrtRatioB_)
+    
+    let numerator = sorted._2 - sorted._1
+
+    strict err = if sorted._1 <= 0.toBigInt() then throw("sorted._1 <= 0") else unit
+
+    if roundUp_ then
+        fraction(fraction(liquidity_.toBigInt(), numerator, sorted._2, CEILING), 1.toBigInt(), sorted._1, CEILING) # QA: over/underflow - need to check it
+    else
+        fraction(liquidity_.toBigInt(), numerator, sorted._2, FLOOR) / sorted._1
+}
+
+func _getAmount1DeltaInner(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity_: Int,
+    roundUp_: Boolean
+) = {
+    let sorted =
+        if sqrtRatioA_ > sqrtRatioB_ then
+            (sqrtRatioB_, sqrtRatioA_)
+        else
+            (sqrtRatioA_, sqrtRatioB_)
+    
+    if roundUp_ then
+        fraction(liquidity_.toBigInt(), sorted._2 - sorted._1, 1.toBigInt(), CEILING) / PRICE_RATE  # QA: over/underflow - need to check it
+    else
+        fraction(liquidity_.toBigInt(), sorted._2 - sorted._1, 1.toBigInt(), FLOOR) / PRICE_RATE # QA: over/underflow - need to check it
+}
+
+func _getAmount0Delta(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity_: Int
+) = {
+    if liquidity_ < 0 then
+        -1 * toInt(_getAmount0DeltaInner(sqrtRatioA_, sqrtRatioB_, -1 * liquidity_, false))
+    else
+        toInt(_getAmount0DeltaInner(sqrtRatioA_, sqrtRatioB_, liquidity_, true))
+}
+
+func _getAmount1Delta(
+    sqrtRatioA_: BigInt,
+    sqrtRatioB_: BigInt,
+    liquidity: Int
+) = {
+    if liquidity < 0 then
+        -1 * toInt(_getAmount1DeltaInner(sqrtRatioA_, sqrtRatioB_, -1 * liquidity, false))
+    else
+        toInt(_getAmount1DeltaInner(sqrtRatioA_, sqrtRatioB_, liquidity, true))
+}
+
+func _getNextSqrtPriceFromAmount0RoundingUp(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amount_: Int,
+    add_: Boolean
+) = {
+    if amount_ == 0 then sqrtPrice_
+    else
+        if add_ then
+            let product = amount_.toBigInt() * sqrtPrice_
+            if product / amount_.toBigInt() == sqrtPrice_ then
+                let denominator = liquidity_.toBigInt() + product
+                    if denominator >= liquidity_.toBigInt() then
+                        fraction(liquidity_.toBigInt(), 1.toBigInt(), sqrtPrice_, CEILING)
+                    else
+                        fraction(liquidity_.toBigInt(), 1.toBigInt(), (liquidity_.toBigInt() / sqrtPrice_) + amount_.toBigInt(), CEILING)
+            else fraction(liquidity_.toBigInt(), 1.toBigInt(), (liquidity_.toBigInt() / sqrtPrice_) + amount_.toBigInt(), CEILING)
+        else
+            let product = amount_.toBigInt() * sqrtPrice_
+            let denominator = liquidity_.toBigInt() - product
+            fraction(liquidity_.toBigInt(), sqrtPrice_, sqrtPrice_, CEILING)
+}
+
+func _getNextSqrtPriceFromAmount1RoundingDown(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amount_: Int,
+    add_: Boolean
+) = {
+    if add_ then
+        sqrtPrice_ + (amount_ / liquidity_).toBigInt()
+    else
+        sqrtPrice_ - fraction(amount_.toBigInt(), 1.toBigInt(), liquidity_.toBigInt(), CEILING)
+}
+
+func _getNextSqrtPriceFromInput(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amountIn_: Int,
+    zeroForOne_: Boolean
+) = {
+    strict err =
+        if sqrtPrice_ <= 0.toBigInt() then
+            throw("sqrtPrice <= 0")
+        else if liquidity_ <= 0 then
+            throw("liquidity <= 0")
+        else unit
+
+    if zeroForOne_ then
+        _getNextSqrtPriceFromAmount0RoundingUp(sqrtPrice_, liquidity_, amountIn_, true)
+    else
+        _getNextSqrtPriceFromAmount1RoundingDown(sqrtPrice_, liquidity_, amountIn_, true)
+}
+
+func _getNextSqrtPriceFromOutput(
+    sqrtPrice_: BigInt,
+    liquidity_: Int,
+    amountOut_: Int,
+    zeroForOne_: Boolean
+) = {
+    strict err =
+        if sqrtPrice_ <= 0.toBigInt() then
+            throw("sqrtPrice <= 0")
+        else if liquidity_ <= 0 then
+            throw("liquidity <= 0")
+        else unit
+
+    if zeroForOne_ then
+        _getNextSqrtPriceFromAmount1RoundingDown(sqrtPrice_, liquidity_, amountOut_, false)
+    else
+        _getNextSqrtPriceFromAmount0RoundingUp(sqrtPrice_, liquidity_, amountOut_, false)
+}
+
+# ---------- Data structures functions ----------
+
+func _loadTick(index_: Int) = {
+    match getString("TICK__" + index_.toString()) {
+        case a: String =>
+            let struct = a.split(SEP)
+            (
+                parseIntValue(struct[0]),       # liquidityGross
+                parseIntValue(struct[1]),       # liquidityNet
+                parseIntValue(struct[2]) == 1,  # initialized
+                parseIntValue(struct[3]),       # feeGrowthOutside0
+                parseIntValue(struct[4])        # feeGrowthOutside1
+            )
+        case _ => (0, 0, false, 0, 0)
+    }
+}
+
+func _saveTick(
+    index_: Int,
+    tick_: (Int, Int, Boolean, Int, Int)
+) = {
+    [StringEntry("TICK__" + index_.toString(), makeString([
+        tick_._1.toString(),
+        tick_._2.toString(),
+        if tick_._3 then "1" else "0",
+        tick_._4.toString(),
+        tick_._5.toString()
+    ], SEP))]
+}
+
+func _loadPosition(
+    owner_: String,
+    tickLower_: Int,
+    tickUpper_: Int
+) = {
+    match getString("POSITION__" + owner_ + SEP + tickLower_.toString() + SEP + tickUpper_.toString()) {
+        case a: String => 
+            let struct = a.split(SEP)
+            (
+                parseIntValue(struct[0]),   # liquidity
+                parseIntValue(struct[1]),   # feeGrowthInside0Last
+                parseIntValue(struct[2]),   # feeGrowthInside1Last
+                parseIntValue(struct[3]),   # tokensOwed0
+                parseIntValue(struct[4])    # tokensOwed1
+            )
+        case _ => (0, 0, 0, 0, 0)
+    }
+}
+
+func _savePosition(
+    owner_: String,
+    tickLower_: Int,
+    tickUpper_: Int,
+    position_: (Int, Int, Int, Int, Int)
+) = {
+    [StringEntry("POSITION__" + owner_ + SEP + tickLower_.toString() + SEP + tickUpper_.toString(), makeString([
+        position_._1.toString(),
+        position_._2.toString(),
+        position_._3.toString(),
+        position_._4.toString(),
+        position_._5.toString()
+    ], SEP))]
+}
+
+func _loadStorage() = {
+    match getString(KEY_STORAGE) {
+        case a: String => 
+            let struct = a.split(SEP)
+            (
+                struct[0],                      # token0
+                struct[1],                      # token1
+                parseIntValue(struct[2]),       # tickSpacing
+                parseIntValue(struct[3]),       # maxLiquidityPerTick
+                parseIntValue(struct[4]),       # tick
+                parseBigIntValue(struct[5]),    # price
+                parseIntValue(struct[6]),       # lp fee rate
+                struct[7] == "1",               # unlocked
+                parseIntValue(struct[8]),       # liquidity
+                parseIntValue(struct[9]),       # feeGrowthGlobal0
+                parseIntValue(struct[10]),      # feeGrowthGlobal1
+                parseIntValue(struct[11]),      # protocol fee rate
+                parseIntValue(struct[12]),      # protocol fee token0
+                parseIntValue(struct[13])       # protocol fee token1
+            )
+        case _ => ("", "", 0, 0, 0, 0.toBigInt(), 0, false, 0, 0, 0, 0, 0, 0)
+    }
+}
+
+func _saveStorage(
+    storage_: (String, String, Int, Int, Int, BigInt, Int, Boolean, Int, Int, Int, Int, Int, Int)
+) = {
+    [StringEntry(KEY_STORAGE, makeString([
+        storage_._1,
+        storage_._2,
+        storage_._3.toString(),
+        storage_._4.toString(),
+        storage_._5.toString(),
+        storage_._6.toString(),
+        storage_._7.toString(),
+        if storage_._8 then "1" else "0",
+        storage_._9.toString(),
+        storage_._10.toString(),
+        storage_._11.toString(),
+        storage_._12.toString(),
+        storage_._13.toString(),
+        storage_._14.toString()
+    ], SEP))]
+}
+
+func _loadTickIdxRoot() = {
+    match getString("TICK_IDX_ROOT") {
+        case a: String => a
+        case _ => ZERO_INDEX_900
+    }
+}
+
+func _saveTickIdxRoot(value_: String) = {
+    [StringEntry("TICK_IDX_ROOT", value_)]
+}
+
+func _loadTickIdxWord(index_: Int) = {
+    match getString("TICK_IDX__" + index_.toString()) {
+        case a: String => a
+        case _ => ZERO_INDEX_1000
+    }
+}
+
+func _saveTickIdxWord(index_: Int, value_: String) = {
+    [StringEntry("TICK_IDX__" + index_.toString(), value_)]
+}
+
+# ---------- Initializable functions ----------
+
+func _whenNotInitialized() = {
+    let storage = _loadStorage()
+
+    if storage._1 != "" || storage._2 != "" then
+        throw("_whenNotInitialized: revert")
+    else true
+}
+
+func _whenInitialized() = {
+    let storage = _loadStorage()
+
+    if storage._1 == "" && storage._2 == "" then
+        throw("_whenInitialized: revert")
+    else true
+}
+
+# ---------- Tick index functions ----------
+
+func _getTickIndex(tick_: Int) = {
+    (MAX_TICK + tick_) / TICK_INDEX_SIZE
+}
+
+# TODO: not used now
+func _doSearchInWord(word_: String, pos_: Int) = {
+    # Search left side
+    let resLeft = lastIndexOf(word_, "1", pos_) # QA maybe pos_ - 1? (Check boundaries)
+
+    match resLeft {
+        case a: Int => a
+        case _ =>
+            # Search right side
+            let resRight = indexOf(word_, "1", pos_) # QA maybe pos_ + 1? (Check boundaries)
+            match resRight {
+                case a: Int => a
+                case _ => unit
+            }
+    }
+}
+
+func _doSearchInWordWithDirection(word_: String, pos_: Int, atRight: Boolean) = {
+    if atRight then
+        indexOf(word_, "1", pos_) # QA maybe pos_ + 1? (Check boundaries)
+    else
+        lastIndexOf(word_, "1", pos_) # QA maybe pos_ - 1? (Check boundaries)
+}
+
+func _getNextInitTickWithDirection(tick_: Int, zeroForOne_: Boolean) = {
+    # First look at current word
+    let currentIdx = _getTickIndex(tick_)
+    let currentWord = _loadTickIdxWord(currentIdx)
+    let position = (MAX_TICK + tick_) - currentIdx * TICK_INDEX_SIZE
+
+    let wordSearchResult = _doSearchInWordWithDirection(currentWord, position, zeroForOne_)
+    match wordSearchResult {
+        case a: Int => a
+        case _ =>
+            # Find closest tick at root index
+            let rootWord = _loadTickIdxRoot()
+            let rootSearchResult = _doSearchInWordWithDirection(rootWord, currentIdx, zeroForOne_)
+            match rootSearchResult {
+                case a: Int =>
+                    # Found next root index, do find any word index there
+                    let foundWord = _loadTickIdxWord(a)
+                    let startSearchIdx = if zeroForOne_ then -1 else TICK_INDEX_SIZE + 1
+                    let wordSearchResult1 = _doSearchInWordWithDirection(foundWord, startSearchIdx, zeroForOne_)
+                    match wordSearchResult1 {
+                        case aa: Int => a * TICK_INDEX_SIZE + aa # convert index at tick
+                        case _ => throw("no init tick at init word")
+                    }
+                case _ =>
+                    if zeroForOne_ then MAX_TICK else MIN_TICK
+                    # unit # no ticks inited at all, return unit
+            }
+    }
+}
+
+# TODO: not used now
+func _getClosestInitTick(tick_: Int) = {
+    # First look at current word
+    let currentIdx = _getTickIndex(tick_)
+    let currentWord = _loadTickIdxWord(currentIdx)
+    let position = (MAX_TICK + tick_) - currentIdx * TICK_INDEX_SIZE
+
+    let wordSearchResult = _doSearchInWord(currentWord, position)
+    match wordSearchResult {
+        case a: Int => a 
+        case _ =>
+            # Find closest tick at root index TODO
+            let rootWord = _loadTickIdxRoot()
+            let rootSearchResult = _doSearchInWord(rootWord, currentIdx)
+            match rootSearchResult {
+                case a: Int =>
+                    # Found next root index, do find any word index there
+                    let foundWord = _loadTickIdxWord(a)
+                    let wordSearchResult1 = _doSearchInWord(foundWord, -1)
+                    match wordSearchResult1 {
+                        case aa: Int => a * TICK_INDEX_SIZE + aa # convert index at tick
+                        case _ => throw("no init tick at init word")
+                    }
+                case _ =>
+                    unit # no ticks inited at all, return unit
+            }
+    }
+}
+
+func _flipTickInWord(word_: String, pos_: Int) = {
+    let right = takeRight(word_, word_.size() - pos_) # here current tick is the first one
+    let updatedTick = if indexOf(right, "0") == 0 then "1" else "0" # first tick 0->1 or 1->0
+    take(word_, pos_) + updatedTick + drop(right, 1)
+}
+
+func _flipTick(tick_: Int) = {
+    # Get current word idx
+    let wordIdx = _getTickIndex(tick_)
+    let word = _loadTickIdxWord(wordIdx)
+    let position = (MAX_TICK + tick_) - wordIdx * TICK_INDEX_SIZE
+
+    # Flip word idx
+    let updatedWord = _flipTickInWord(word, position)
+    
+    # Flip root idx
+    let root = _loadTickIdxRoot()
+    let updatedRoot =
+        if !contains(word, "1") || !contains(updatedWord, "1") then
+            # no init ticks in word BEFORE (AFTER) -> flip UP (DOWN) word index in root
+            _flipTickInWord(root, wordIdx)
+        else root
+
+    _saveTickIdxRoot(updatedRoot) ++ _saveTickIdxWord(wordIdx, updatedWord)
+}
+
+# ---------- Tick functions ----------
+
+func _tickSpacingToMaxLiquidityPerTick(tickSpacing_: Int) = {
+    let minTick = (MIN_TICK / tickSpacing_) * tickSpacing_
+    let maxTick = (MAX_TICK / tickSpacing_) * tickSpacing_
+    let numTicks = (maxTick - minTick) / tickSpacing_ + 1
+
+    MAX_INT / numTicks
+}
+
+func _ticksGetFeeGrowthInside(
+    fullTickLower_: (Int, Int, Boolean, Int, Int),
+    fullTickUpper_: (Int, Int, Boolean, Int, Int),
+    tickLower_: Int,
+    tickUpper_: Int,
+    tick_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int
+) = {
+    let feeGrowthBelow =
+        if tick_ >= tickLower_ then
+            (fullTickLower_._4, fullTickLower_._5)
+        else
+            (feeGrowthGlobal0_ - fullTickLower_._4, feeGrowthGlobal1_ - fullTickLower_._5)
+    let feeGrowthBelow0 = feeGrowthBelow._1
+    let feeGrowthBelow1 = feeGrowthBelow._2
+
+    let feeGrowthAbove =
+        if tick_ < tickUpper_ then
+            (fullTickUpper_._4, fullTickUpper_._5)
+        else
+            (feeGrowthGlobal0_ - fullTickUpper_._4, feeGrowthGlobal1_ - fullTickUpper_._5)
+    let feeGrowthAbove0 = feeGrowthAbove._1
+    let feeGrowthAbove1 = feeGrowthAbove._2
+
+    (feeGrowthGlobal0_ - feeGrowthBelow0 - feeGrowthAbove0, feeGrowthGlobal1_ - feeGrowthBelow1 - feeGrowthAbove1)
+}
+
+func _tickUpdate(
+    tick_: Int,
+    tickCurrent_: Int,
+    liquidityDelta_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int,
+    upper_: Boolean,
+    maxLiquidity_: Int
+) = {
+    let tickData = _loadTick(tick_)
+    let liquidityGrossBefore = tickData._1
+    let liquidityNet = tickData._2
+    let liquidityGrossAfter = _sumPositiveUnderflow(liquidityGrossBefore, liquidityDelta_)
+
+    strict err =
+        if liquidityGrossAfter > maxLiquidity_ then
+            throw("LO")
+        else unit
+
+    let needToFlip = (liquidityGrossAfter == 0) != (liquidityGrossBefore == 0)
+
+    let liquidityNetAfter = if upper_ then liquidityNet - liquidityDelta_ else liquidityNet + liquidityDelta_
+
+    let tickDataUpdated =
+        if liquidityGrossBefore == 0 && tick_ <= tickCurrent_ then
+            (
+                liquidityGrossAfter,
+                liquidityNetAfter,
+                true,
+                feeGrowthGlobal0_,
+                feeGrowthGlobal1_
+            )
+        else if liquidityGrossBefore == 0 then 
+            (
+                liquidityGrossAfter,
+                liquidityNetAfter,
+                true,
+                0,
+                0
+            )
+        else # TODO: we can delete tick or set initialized = false if liquidityGrossAfter == 0
+            (
+                liquidityGrossAfter,
+                liquidityNetAfter,
+                tickData._3,
+                tickData._4,
+                tickData._5
+            )
+
+    (needToFlip, tickDataUpdated)
+}
+
+func _tickCross(
+    tick_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int
+) = {
+    let tickData = _loadTick(tick_)
+
+    (
+        tickData._1,
+        tickData._2,
+        tickData._3,
+        feeGrowthGlobal0_ - tickData._4,
+        feeGrowthGlobal1_ - tickData._5
+    )
+}
+
+# ---------- Position functions ----------
+
+func _updatePosition(
+    recipient_: String,
+    tickLower_: Int,
+    tickUpper_: Int,
+    liquidityDelta_: Int,
+    tick_: Int,
+    maxLiquidityPerTick_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int
+) = {
+    let position = _loadPosition(recipient_, tickLower_, tickUpper_)
+
+    let positionLiquidity = position._1
+    let feeGrowthInside0Last = position._2
+    let feeGrowthInside1Last = position._3
+    let positiontokensOwed0 = position._4
+    let positiontokensOwed1 = position._5
+
+    let updatedTicks =
+        if liquidityDelta_ != 0 then
+            let lowerTickStruct = _tickUpdate(
+                tickLower_,
+                tick_,
+                liquidityDelta_,
+                feeGrowthGlobal0_,
+                feeGrowthGlobal1_,
+                false,
+                maxLiquidityPerTick_
+            )
+
+            let upperTickStruct = _tickUpdate(
+                tickUpper_,
+                tick_,
+                liquidityDelta_,
+                feeGrowthGlobal0_,
+                feeGrowthGlobal1_,
+                false,
+                maxLiquidityPerTick_
+            )
+
+            strict flip =
+                if lowerTickStruct._1 then
+                    strict flipLower = invoke(
+                        this,
+                        "flipTick",
+                        [tickLower_],
+                        []
+                    )
+                    unit
+                else unit
+                
+            strict flip1 =
+                if upperTickStruct._1 then
+                    strict flipUpper = invoke(
+                        this,
+                        "flipTick",
+                        [tickUpper_],
+                        []
+                    )
+                    unit
+                else unit
+
+            (lowerTickStruct._2, upperTickStruct._2)
+        else
+            (_loadTick(tickLower_), _loadTick(tickUpper_))
+
+    let feeGrowthInside = _ticksGetFeeGrowthInside(updatedTicks._1, updatedTicks._2, tickLower_, tickUpper_, tick_, feeGrowthGlobal0_, feeGrowthGlobal1_)
+    let feeGrowthInside0 = feeGrowthInside._1
+    let feeGrowthInside1 = feeGrowthInside._2
+
+    let liquidityNext = 
+        if liquidityDelta_ == 0 then
+            if positionLiquidity > 0 then positionLiquidity else throw("NP") # disallow pokes for 0 liquidity positions
+        else
+            _sumPositiveUnderflow(positionLiquidity, liquidityDelta_)
+
+    let tokensOwed0 = fraction(feeGrowthInside0 - feeGrowthInside0Last, positionLiquidity, INT_DECIMALS) # TODO: QA: here we can face underflow of feeGrowth/liquidity
+    let tokensOwed1 = fraction(feeGrowthInside1 - feeGrowthInside1Last, positionLiquidity, INT_DECIMALS)
+
+    let updatedPosition = (
+        liquidityNext,
+        feeGrowthInside0,
+        feeGrowthInside1,
+        positiontokensOwed0 + tokensOwed0,
+        positiontokensOwed1 + tokensOwed1
+    )
+
+    # TODO: maybe clear any tick data that is no longer needed
+    # if (liquidityDelta < 0) {
+    #     if (flippedLower) {
+    #         ticks.clear(tickLower);
+    #     }
+    #     if (flippedUpper) {
+    #         ticks.clear(tickUpper);
+    #     }
+    # }
+    # return position
+
+    (
+        updatedPosition,
+        _saveTick(tickLower_, updatedTicks._1)
+        ++ _saveTick(tickUpper_, updatedTicks._2)
+    ) # TODO : was -> savePosition(recipient_, tickLower_, tickUpper_, updatedPosition) ++ updatedTicks._3 ++ updatedTicks._4)
+}
+
+func _modifyPosition(
+    recipient_: String,
+    tickLower_: Int,
+    tickUpper_: Int,
+    liquidityDelta_: Int,
+    liquidityBefore_: Int,
+    price_: BigInt,
+    tick_: Int,
+    maxLiquidityPerTick_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int
+) = {
+    let positionResult = _updatePosition(recipient_, tickLower_, tickUpper_, liquidityDelta_, tick_, maxLiquidityPerTick_, feeGrowthGlobal0_, feeGrowthGlobal1_)
+    let updatedPosition = positionResult._1
+    let savedTicks = positionResult._2
+
+    if liquidityDelta_ != 0 then
+        if tick_ < tickLower_ then
+            # current tick is below the passed range; liquidity can only become in range by crossing from left to
+            # right, when we'll need _more_ token0 (it's becoming more valuable) so user must provide it
+            let amount0 = _getAmount0Delta(
+                _getSqrtRatioAtTick(tickLower_),
+                _getSqrtRatioAtTick(tickUpper_),
+                liquidityDelta_
+            )
+
+            (updatedPosition, amount0, 0, liquidityBefore_, savedTicks)
+        else if tick_ < tickUpper_ then
+            # current tick is inside the passed range
+            let amount0 = _getAmount0Delta(
+                price_,
+                _getSqrtRatioAtTick(tickUpper_),
+                liquidityDelta_
+            )
+
+            let amount1 = _getAmount1Delta(
+                _getSqrtRatioAtTick(tickLower_),
+                price_,
+                liquidityDelta_
+            )
+
+            let liquidityAfter = _sumPositiveUnderflow(liquidityBefore_, liquidityDelta_);
+
+            (updatedPosition, amount0, amount1, liquidityAfter, savedTicks)
+        else
+            # current tick is above the passed range; liquidity can only become in range by crossing from right to
+            # left, when we'll need _more_ token1 (it's becoming more valuable) so user must provide it
+            let amount1 = _getAmount1Delta(
+                _getSqrtRatioAtTick(tickLower_),
+                _getSqrtRatioAtTick(tickUpper_),
+                liquidityDelta_
+            )
+
+            (updatedPosition, 0, amount1, liquidityBefore_, savedTicks)
+    else (updatedPosition, 0, 0, liquidityBefore_, savedTicks)
+}
+
+# ---------- Swap step functions ----------
+
+func _computeSwapStep(
+    sqrtRatioCurrent_: BigInt,
+    sqrtRatioTarget_: BigInt,
+    liquidity_: Int,
+    amountRemaining_: Int,
+    lpFeeRate_: Int
+) = {
+    let zeroForOne = sqrtRatioCurrent_ >= sqrtRatioTarget_
+    let exactIn = amountRemaining_ >= 0
+
+    let tuple_1 =
+        if exactIn then
+            let amountRemainingLessFee = amountRemaining_ * (MAX_FEE - lpFeeRate_) / MAX_FEE # TODO: QA: CHECK IT (border conditions)
+            let amountIn =
+                if zeroForOne then
+                    toInt(_getAmount0DeltaInner(sqrtRatioTarget_, sqrtRatioCurrent_, liquidity_, true))
+                else
+                    toInt(_getAmount1DeltaInner(sqrtRatioCurrent_, sqrtRatioTarget_, liquidity_, true))
+            let sqrtRatioNextX96 =
+                if amountRemainingLessFee >= amountIn then
+                    sqrtRatioTarget_
+                else
+                    _getNextSqrtPriceFromInput(
+                        sqrtRatioCurrent_,
+                        liquidity_,
+                        amountRemainingLessFee,
+                        zeroForOne
+                    )
+            (sqrtRatioNextX96, amountIn, 0)
+        else
+            let amountOut =
+                if zeroForOne then
+                    toInt(_getAmount1DeltaInner(sqrtRatioTarget_, sqrtRatioCurrent_, liquidity_, false))
+                else
+                    toInt(_getAmount0DeltaInner(sqrtRatioCurrent_, sqrtRatioTarget_, liquidity_, false))
+            let sqrtRatioNextX96 =
+                if -1 * amountRemaining_ >= amountOut then
+                    sqrtRatioTarget_
+                else
+                    _getNextSqrtPriceFromOutput(
+                        sqrtRatioCurrent_,
+                        liquidity_,
+                        -1 * amountRemaining_,
+                        zeroForOne
+                    )
+            (sqrtRatioNextX96, 0, amountOut)
+
+    let sqrtRatioNextX96_1 = tuple_1._1
+    let amountIn_1 = tuple_1._2
+    let amountOut_1 = tuple_1._3
+
+    let maximum = sqrtRatioTarget_ == sqrtRatioNextX96_1
+
+    let tuple_2 =
+        if zeroForOne then
+            let amountIn = if maximum && exactIn then amountIn_1 else toInt(_getAmount0DeltaInner(sqrtRatioNextX96_1, sqrtRatioCurrent_, liquidity_, true))
+            let amountOut = if maximum && !exactIn then amountOut_1 else toInt(_getAmount1DeltaInner(sqrtRatioNextX96_1, sqrtRatioCurrent_, liquidity_, false))
+            (amountIn, amountOut)
+        else
+            let amountIn = if maximum && exactIn then amountIn_1 else toInt(_getAmount1DeltaInner(sqrtRatioCurrent_, sqrtRatioNextX96_1, liquidity_, true))
+            let amountOut = if maximum && !exactIn then amountOut_1 else toInt(_getAmount0DeltaInner(sqrtRatioCurrent_, sqrtRatioNextX96_1, liquidity_, false))
+            (amountIn, amountOut)
+
+    let amountIn_2 = tuple_2._1
+    let amountOut_2 = if !exactIn && tuple_2._2 > -1 * amountRemaining_ then -1 * amountRemaining_ else tuple_2._2 # cap the output amount to not exceed the remaining output amount
+
+    # we didn't reach the target, so take the remainder of the maximum input as fee
+    let feeAmount = if exactIn && sqrtRatioNextX96_1 != sqrtRatioTarget_ then amountRemaining_ - amountIn_2 else amountIn_2 * lpFeeRate_ / (MAX_FEE - lpFeeRate_)
+
+    (sqrtRatioNextX96_1, amountIn_2, amountOut_2, feeAmount)
+}
+
+
+
+
+# TODO: not used
+func balance(token_: String) = {
+    if token_ == WAVES || token_ == "" then
+        wavesBalance(this).regular
+    else
+        assetBalance(this, fromBase58String(token_))
+}
+
+# TODO: remove
+func readPosition(
+    owner_: String,
+    tickLower_: Int,
+    tickUpper_: Int
+) = {
+    let positionInfo = match getString("POSITION__" + owner_ + SEP + tickLower_.toString() + SEP + tickUpper_.toString()) {
+        case a:String => a
+        case _ => "" # TODO: create empty serialized string HERE to split it
+    }
+    split(positionInfo, SEP)
+}
+
+# TODO: remove
+func savePosition(
+    owner_: String,
+    tickLower_: Int,
+    tickUpper_: Int,
+    positionInfo_: List[String]
+) = {
+    [StringEntry("POSITION__" + owner_ + SEP + tickLower_.toString() + SEP + tickUpper_.toString(), makeString(positionInfo_, SEP))]
+}
+
+# ---------- Private callable functions ----------
+
+@Callable(i)
+func flipTick(tick_: Int) = {
+    strict err =
+        if i.caller != this then
+            throw("only this contract")
+        else unit
+
+    (_flipTick(tick_), unit)
+}
+
+@Callable(i)
+func crossTick(
+    tick_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int
+) = {
+    strict err =
+        if i.caller != this then
+            throw("only this contract")
+        else unit
+
+    let tick = _tickCross(tick_, feeGrowthGlobal0_, feeGrowthGlobal1_)
+
+    (_saveTick(tick_, tick), tick._2)
+}
+
+# TODO: maybe not needed
+@Callable(i)
+func updateTick(
+    tick_: Int,
+    tickCurrent_: Int,
+    liquidityDelta_: Int,
+    feeGrowthGlobal0_: Int,
+    feeGrowthGlobal1_: Int,
+    upper_: Boolean,
+    maxLiquidity_: Int
+) = {
+    strict err =
+        if i.caller != this then
+            throw("only this contract")
+        else unit
+
+    let tickStruct = _tickUpdate(
+        tick_,
+        tickCurrent_,
+        liquidityDelta_,
+        feeGrowthGlobal0_,
+        feeGrowthGlobal1_,
+        upper_,
+        maxLiquidity_
+    )
+
+    let needToFlip = tickStruct._1
+    let tick = tickStruct._2
+
+    (
+        _saveTick(
+            tick_,
+            tick
+        ), needToFlip
+    )
+}
+
+# ---------- Public callable functions ----------
+
+@Callable(i)
+func init(initTick_: Int, token0_: String, token1_: String, lpFeeRate_: Int, protocolFeeRate_: Int, tickSpacing_: Int) = {
+    strict err =
+        _whenNotInitialized() &&
+        _validateInt(initTick_, MIN_TICK, MAX_TICK, "init: invalid tick") &&
+        _validateAsset(token0_, "init: invalid token0") &&
+        _validateAsset(token1_, "init: invalid token1") &&
+        _validateInt(lpFeeRate_, 0, MAX_FEE, "init: invalid lp fee") &&
+        _validateInt(protocolFeeRate_, 0, MAX_FEE, "init: invalid protocol fee") &&
+        _validateInt(tickSpacing_, 1, 2 * MAX_TICK, "init: invalid tickSpacing")
+
+    let initPrice = _getSqrtRatioAtTick(initTick_)
+    let maxLiquidityPerTick = _tickSpacingToMaxLiquidityPerTick(tickSpacing_)
+
+    let storageUpdated = (
+        token0_,                # token0
+        token1_,                # token1
+        tickSpacing_,           # tickSpacing
+        maxLiquidityPerTick,    # maxLiquidityPerTick
+        initTick_,              # tick
+        initPrice,              # price
+        lpFeeRate_,             # lp fee rate
+        true,                   # unlocked
+        0,                      # liquidity
+        0,                      # feeGrowthGlobal0
+        0,                      # feeGrowthGlobal1
+        protocolFeeRate_,       # protocol fee rate
+        0,                      # protocol fee token0
+        0                       # protocol fee token1
+    )
+
+    (
+        _saveStorage(storageUpdated), unit
+    )
+}
+
+@Callable(i)
+func mint(
+    recipient_: String,
+    tickLower_: Int,
+    tickUpper_: Int,
+    amount_: Int # TODO: maybe forward calldata here for further invocations
+) = {
+    strict err =
+        _validateAddress(recipient_, "mint: invalid recipient") &&
+        _validateTicks(tickLower_, tickUpper_, "mint: invalid ticks") &&
+        _validateInt(amount_, 0, MAX_INT, "mint: invalid amount")
+
+    let storage = _loadStorage()
+    let token0 = storage._1
+    let token1 = storage._2
+    let maxLiquidityPerTick = storage._4
+    let tick = storage._5
+    let price = storage._6
+    let liquidityBefore = storage._9
+    let feeGrowthGlobal0 = storage._10
+    let feeGrowthGlobal1 = storage._11
+
+    strict modifiedPosition = _modifyPosition(recipient_, tickLower_, tickUpper_, amount_, liquidityBefore, price, tick, maxLiquidityPerTick, feeGrowthGlobal0, feeGrowthGlobal1)
+    let savedPosition = _savePosition(recipient_, tickLower_, tickUpper_, modifiedPosition._1)
+    let amount0Int = modifiedPosition._2
+    let amount1Int = modifiedPosition._3
+    let liquidityAfter = modifiedPosition._4
+    let savedTicks = modifiedPosition._5
+
+    strict err1 =
+        if i.payments.size() < 2 then # TODO: BUG! We can enter by single token also
+            throw("not enough payments")
+        else if _assetToStr(i.payments[0].assetId) != token0 then
+            throw("wrong token0")
+        else if _assetToStr(i.payments[1].assetId) != token1 then
+            throw("wrong token1")
+        else if i.payments[0].amount < amount0Int then
+            throw("insufficient amount0")
+        else if i.payments[1].amount < amount1Int then
+            throw("insufficient amount1")
+        else unit
+
+    let updatedStorage = (
+        storage._1,
+        storage._2,
+        storage._3,
+        storage._4,
+        storage._5,
+        storage._6,
+        storage._7,
+        storage._8,
+        liquidityAfter,
+        storage._10,
+        storage._11,
+        storage._12,
+        storage._13,
+        storage._14
+    )
+
+    let transferActions =
+        if i.payments[0].amount - amount0Int > 0 then
+            [ScriptTransfer(i.caller, i.payments[0].amount - amount0Int, i.payments[0].assetId)]
+        else []
+        ++
+        if i.payments[1].amount - amount1Int > 0 then
+            [ScriptTransfer(i.caller, i.payments[1].amount - amount1Int, i.payments[1].assetId)]
+        else []
+
+    (
+        _saveStorage(updatedStorage)
+        ++ savedPosition
+        ++ savedTicks
+        ++ transferActions, unit
+    )
+}
+
+@Callable(i)
+func collect(
+    recipient_: String,
+    tickLower_: Int,
+    tickUpper_: Int,
+    amount0Requested_: Int,
+    amount1Requested_: Int
+) = {
+    strict err =
+        _validateAddress(recipient_, "collect: invalid recipient") &&
+        _validateTicks(tickLower_, tickUpper_, "collect: invalid ticks") &&
+        _validateInt(amount0Requested_, 0, MAX_INT, "collect: invalid amount0") &&
+        _validateInt(amount1Requested_, 0, MAX_INT, "collect: invalid amount1")
+
+    let storage = _loadStorage()
+    let token0 = _strToAsset(storage._1)
+    let token1 = _strToAsset(storage._2)
+
+    let position = _loadPosition(recipient_, tickLower_, tickUpper_)
+    let tokensOwed0 = position._4
+    let tokensOwed1 = position._5
+
+    let amount0 = if amount0Requested_ > tokensOwed0 then tokensOwed0 else amount0Requested_
+    let amount1 = if amount1Requested_ > tokensOwed1 then tokensOwed1 else amount1Requested_
+
+    let updatedPosition = (
+        position._1,
+        position._2,
+        position._3,
+        tokensOwed0 - amount0,
+        tokensOwed1 - amount1
+    )
+
+    (
+        _savePosition(recipient_, tickLower_, tickUpper_, updatedPosition)
+        ++
+        [
+            ScriptTransfer(Address(fromBase58String(recipient_)), amount0, token0),
+            ScriptTransfer(Address(fromBase58String(recipient_)), amount1, token1)
+        ], unit
+    )
+}
+
+@Callable(i)
+func burn(
+    tickLower_: Int,
+    tickUpper_: Int,
+    amount_: Int
+) = {
+    strict err =
+        _validateTicks(tickLower_, tickUpper_, "burn: invalid ticks") &&
+        _validateInt(amount_, 0, MAX_INT, "burn: invalid amount")
+
+    let callerAddress = i.caller.toString()
+    let storage = _loadStorage()
+    let token0 = storage._1
+    let token1 = storage._2
+    let maxLiquidityPerTick = storage._4
+    let tick = storage._5
+    let price = storage._6
+    let liquidityBefore = storage._9
+    let feeGrowthGlobal0 = storage._10
+    let feeGrowthGlobal1 = storage._11
+
+    strict modifiedPosition = _modifyPosition(callerAddress, tickLower_, tickUpper_, -1 * amount_, liquidityBefore, price, tick, maxLiquidityPerTick, feeGrowthGlobal0, feeGrowthGlobal1)
+    let position = modifiedPosition._1
+    let amount0Int = modifiedPosition._2
+    let amount1Int = modifiedPosition._3
+    let liquidityAfter = modifiedPosition._4
+    let savedTicks = modifiedPosition._5
+
+    strict err1 =
+        if amount0Int > 0 || amount1Int > 0 then
+            throw("burn: need to add tokens to burn position")
+        else unit
+
+    # we move all amounts of position to unclaimed fee here, we can collect them later
+    let updatedPosition = (
+        position._1,
+        position._2,
+        position._3,
+        position._4 + -1 * amount0Int,
+        position._5 + -1 * amount1Int
+    )
+
+    let updatedStorage = (
+        storage._1,
+        storage._2,
+        storage._3,
+        storage._4,
+        storage._5,
+        storage._6,
+        storage._7,
+        storage._8,
+        liquidityAfter,
+        storage._10,
+        storage._11,
+        storage._12,
+        storage._13,
+        storage._14
+    )
+
+    (
+        _saveStorage(updatedStorage)
+        ++ _savePosition(callerAddress, tickLower_, tickUpper_, updatedPosition)
+        ++ savedTicks, unit
+    )
+}
+
+@Callable(i)
+func swap(
+    recipient_: String,
+    zeroForOne_: Boolean,
+    amountSpecified_: Int,
+    sqrtPriceLimitX96Str: String
+) = {
+    strict err =
+        _whenInitialized()
+    # TODO: check unlocked (for forwarded invokes) and inited
+
+    let sqrtPriceLimitX96 = parseBigIntValue(sqrtPriceLimitX96Str).valueOrErrorMessage("swap: invalid price")
+
+    let storage = _loadStorage()
+    let token0 = _strToAsset(storage._1)
+    let token1 = _strToAsset(storage._2)
+    let tickSpacing = storage._3
+    let tick = storage._5
+    let price = storage._6
+    let lpFeeRate = storage._7
+    let unlocked = storage._8
+    let liquidityBefore = storage._9
+    let feeGrowthGlobal0 = storage._10
+    let feeGrowthGlobal1 = storage._11
+    let protocolFeeRate = storage._12
+    let protocolFeeToken0 = storage._13
+    let protocolFeeToken1 = storage._14
+
+    # TODO: check payment[0]
+    strict err1 =
+        if amountSpecified_ != 0 then
+            throw("invalid amount")
+        else if zeroForOne_ && !(sqrtPriceLimitX96 < price && sqrtPriceLimitX96 > MIN_SQRT_RATIO) then
+            throw("q") # TODO: check this condition
+        else unit
+
+    let exactInput = amountSpecified_ > 0
+
+    func countStep(sqrtPriceX96: BigInt, tick: Int, liquidityInner: Int, amountSpecifiedRemaining: Int, amountCalculated: Int, protocolFeeInner: Int, feeGrowthInner: Int) = {
+        let sqrtPriceStartX96 = sqrtPriceX96
+        let tickNext = _getNextInitTickWithDirection(tick, zeroForOne_) # QA: check possible returns
+        # let tickNextNum = tickNext._1
+        # let tickNextInit = tickNext._2
+
+        # TODO: QA: we need it? can we over/underflow ticks?
+        # // ensure that we do not overshoot the min/max tick, as the tick bitmap is not aware of these bounds
+        # if (step.tickNext < TickMath.MIN_TICK) {
+        #     step.tickNext = TickMath.MIN_TICK;
+        # } else if (step.tickNext > TickMath.MAX_TICK) {
+        #     step.tickNext = TickMath.MAX_TICK;
+        # }
+
+        let sqrtPriceNextX96 = _getSqrtRatioAtTick(tickNext)
+        let condition = if zeroForOne_ then sqrtPriceNextX96 < sqrtPriceLimitX96 else sqrtPriceNextX96 > sqrtPriceLimitX96
+        let priceLimit = if condition then sqrtPriceLimitX96 else sqrtPriceNextX96 # here we pick "closest" price for swap
+
+        let step = _computeSwapStep(price, priceLimit, liquidityInner, amountSpecifiedRemaining, lpFeeRate) # (sqrtRatioNextX96_1, amountIn_2, amountOut_2, feeAmount)
+        let sqrtPriceX96Updated = step._1
+
+        let amounts =
+            if exactInput then
+                (amountSpecifiedRemaining - step._2 - step._4, amountCalculated - step._3)
+            else
+                (amountSpecifiedRemaining + step._3, amountCalculated + step._2 + step._4)
+
+        let protocolFeeDelta = fraction(step._4, protocolFeeRate, MAX_FEE)
+        let protocolFeeInnerUpdated = protocolFeeInner + protocolFeeDelta
+
+        let feeGrowthInnerUpdated =
+            if liquidityInner > 0 then
+                feeGrowthInner + (step._4 - protocolFeeDelta) / liquidityInner # TODO: QA: possible underflow here?
+            else feeGrowthInner
+
+        let liquidityAndTick =
+            if sqrtPriceX96Updated == sqrtPriceNextX96 then
+                # here we've reached the tick border and have to cross it
+
+                let liquidityAfterShift =
+                    if true then # if tickNextInit then count next liquidity else return old, QA: maybe we dont have to check tickNextInit
+                        let liquidityNet = invoke(
+                            this,
+                            "crossTick",
+                            [
+                                tickNext,
+                                if zeroForOne_ then feeGrowthInnerUpdated else feeGrowthGlobal0,
+                                if zeroForOne_ then feeGrowthGlobal1 else feeGrowthInnerUpdated
+                            ],
+                            []
+                        )._asInt()
+
+                        let liquidityNetSigned = if zeroForOne_ then -1 * liquidityNet else liquidityNet
+                        liquidityInner + liquidityNetSigned
+                    else liquidityInner
+
+                let newTick = if zeroForOne_ then tickNext - 1 else tickNext # QA: maybe dont needed shift while go leftwise
+
+                (liquidityAfterShift, newTick)
+            else if sqrtPriceX96Updated != sqrtPriceStartX96 then
+                # instead of tickNext we recompute unless we're on a lower tick boundary (i.e. already transitioned ticks), and haven't moved
+                let updatedTick = _getTickAtSqrtRatio(sqrtPriceX96Updated)
+                (liquidityInner, updatedTick) 
+            else (liquidityInner, tickNext) # TODO: maybe unreachable
+
+        (amounts._1, amounts._2, sqrtPriceX96Updated, liquidityAndTick._2, feeGrowthInnerUpdated, protocolFeeInnerUpdated, liquidityAndTick._1) # amountSpecifiedRemaining amountCalculated sqrtPriceX96 tick feeGrowthInnerUpdated protocolFee liquidity
+    }
+
+    func foldFunc(acc: (Int, Int, BigInt, Int, Int, Int, Int), elem: String) = {
+        let amountSpecifiedRemainingInner = acc._1
+        let amountCalculatedInner = acc._2
+        let sqrtPriceX96Inner = acc._3
+        let tickInner = acc._4
+        let feeGrowthInner = acc._5 # was feeGrowthGlobalX128Inner
+        let protocolFeeInner = acc._6
+        let liquidityInner = acc._7
+
+        if amountSpecifiedRemainingInner != 0 && sqrtPriceX96Inner != sqrtPriceLimitX96 then
+            countStep(sqrtPriceX96Inner, tickInner, liquidityInner, amountSpecifiedRemainingInner, amountCalculatedInner, protocolFeeInner, feeGrowthInner)
+        else acc
+    }
+
+    let listStr = "0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0"
+    let myList = split_51C(listStr, "_")
+    let result = FOLD<45>(myList, (
+        amountSpecified_,
+        0,
+        price,
+        tick,
+        if zeroForOne_ then feeGrowthGlobal0 else feeGrowthGlobal1,
+        0,
+        liquidityBefore
+    ), foldFunc)
+    let amountSpecifiedRemainingResult = result._1
+    let amountCalculatedResult = result._2
+    let sqrtPriceX96Result = result._3
+    let tickResult = result._4
+    let feeGrowthGlobalResult = result._5
+    let protocolFeeResult = result._6
+    let liquidityResult = result._7
+
+    let feesUpdated = 
+        if zeroForOne_ then
+            (feeGrowthGlobal0 + feeGrowthGlobalResult, feeGrowthGlobal1, protocolFeeToken0 + protocolFeeResult, protocolFeeToken1)
+        else
+            (feeGrowthGlobal0, feeGrowthGlobal1 + feeGrowthGlobalResult, protocolFeeToken0, protocolFeeToken1 + protocolFeeResult)
+
+    let amounts =
+        if zeroForOne_ == exactInput then
+            (amountSpecified_ - amountSpecifiedRemainingResult, amountCalculatedResult)
+        else
+            (amountCalculatedResult, amountSpecified_ - amountSpecifiedRemainingResult)
+
+    let updatedStorage = (
+        storage._1,
+        storage._2,
+        storage._3,
+        storage._4,
+        tickResult,
+        sqrtPriceX96Result,
+        storage._7,
+        storage._8,
+        liquidityResult,
+        feesUpdated._1,
+        feesUpdated._2,
+        storage._12,
+        feesUpdated._3,
+        feesUpdated._4
+    )
+
+    let amount0 = amounts._1
+    let amount1 = amounts._2
+
+    let transferActions =
+        if zeroForOne_ then
+            let action = if amount1 < 0 then [ScriptTransfer(Address(fromBase58String(recipient_)), -1 * amount1, token1)] else []
+            let change = if i.payments[0].amount > amount0 then
+                [ScriptTransfer(Address(fromBase58String(recipient_)), i.payments[0].amount - amount0, token0)]
+                else if i.payments[0].amount == amount0 then [] else throw("insufficient amount0")
+            action ++ change
+        else
+            let action = if amount0 < 0 then [ScriptTransfer(Address(fromBase58String(recipient_)), -1 * amount0, token0)] else []
+            let change = if i.payments[0].amount > amount1 then
+                [ScriptTransfer(Address(fromBase58String(recipient_)), i.payments[0].amount - amount1, token1)]
+                else if i.payments[0].amount == amount1 then [] else throw("insufficient amount1")
+            action ++ change
+
+    (
+        transferActions ++
+        _saveStorage(updatedStorage), unit
+    )
+}
+
+@Verifier(tx)
+func verify() = {
+    sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)
+}
