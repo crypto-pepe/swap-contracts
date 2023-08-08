@@ -981,8 +981,7 @@ func _withdrawAll(amount_: Int) = {
     let (prevAssetBalances, prevAssetTotalSupply) = _loadAssetBalances()
     let (assetWeights, sigmaWeight) = _loadAssetWeights()
 
-    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(0, amount_, lpFeeRate, protocolFeeRate)
-    let lpTokensToBurn = amount_ - lpFee - protocolFee
+    let lpTokensToBurn = amount_
     strict err = _validateInt(lpTokensToBurn, 0, MAX_INT, "_withdrawAll: lpTokensToBurn less than 0")
 
     let (assetBalances, assetTotalSupply, balancesToPay) = _decrementBalancesByLpAmount(prevAssetBalances, lpTokensToBurn, lpTotalSupply)
@@ -1001,7 +1000,7 @@ func _withdrawAll(amount_: Int) = {
         feeMaxRate
     )
 
-    (lpTokensToBurn, balancesToPay, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated)
+    (lpTokensToBurn, balancesToPay, assetBalances)
 }
 
 func _withdraw(assetId_: String, lpAmount_: Int) = {
@@ -1048,18 +1047,10 @@ func _withdraw(assetId_: String, lpAmount_: Int) = {
     }
 
     let targetAmount =
-        let targetAmount = lpAmount_
-        let tempAssetBalances = _decrementBalanceByIndex(prevAssetBalances, targetAssetIndex, targetAmount)
-        let tempAssetTotalSupply = prevAssetTotalSupply - targetAmount
-        let fee = _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
-        let feeDiff = fee - prevFee
-        if feeDiff == 0 then
-            targetAmount
-        else
-            let (success, startOut, stopOut, targetAmountOut) = FOLD<64>(LIST_64, (false, 0, lpAmount_ + prevFee, 0), foldFunc)
-            if !success then
-                throw("_withdraw: can't calculate targetAmount="+targetAmountOut.toString())
-            else targetAmountOut
+        let (success, startOut, stopOut, targetAmountOut) = FOLD<64>(LIST_64, (false, 0, lpAmount_ + prevFee, 0), foldFunc)
+        if !success then
+            throw("_withdraw: can't calculate targetAmount="+targetAmountOut.toString())
+        else targetAmountOut
 
     let finalAssetBalances = _decrementBalanceByIndex(prevAssetBalances, targetAssetIndex, targetAmount)
     let finalAssetTotalSupply = prevAssetTotalSupply - targetAmount
@@ -1366,7 +1357,7 @@ func withdrawAll() = {
         _validateStringEqual(lpAssetIdStr, i.payments[0].assetId._assetToStr(), "withdrawAll: invalid payment asset") &&
         _validateInt(i.payments[0].amount, 0, MAX_INT, "withdrawAll: invalid payment amount")
 
-    let (lpTokensToBurn, balancesToPay, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _withdrawAll(i.payments[0].amount)
+    let (lpTokensToBurn, balancesToPay, assetBalances) = _withdrawAll(i.payments[0].amount)
     let paymentActions = _getPaymentsFromBalances(assets, balancesToPay, i.caller, lpDecimals)
 
     let storageUpdated = (
@@ -1386,10 +1377,7 @@ func withdrawAll() = {
         [Burn(lpAssetId, lpTokensToBurn)] ++
         paymentActions ++
         _saveStorage(storageUpdated) ++
-        _saveAssetBalances(assetBalances) ++
-        _saveLpFee(lpAssetIdStr, lpFee + _loadLpFee(lpAssetIdStr)) ++
-        _saveProtocolFee(lpAssetIdStr, protocolFee + _loadProtocolFee(lpAssetIdStr)) ++
-        _saveSigmaFeePerLp(sigmaFeePerLpUpdated),
+        _saveAssetBalances(assetBalances),
         unit
     )
 }
@@ -1523,7 +1511,7 @@ func getDeposit(assetId_: String, amount_: Int) = {
 @Callable(i)
 func getWithdrawAll(lpAmount_: Int) = {
     strict err = _validateInt(lpAmount_, 0, MAX_INT, "getWithdrawAll: invalid amount")
-    let (lpTokensToBurn, balancesToGet, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _withdrawAll(lpAmount_)
+    let (lpTokensToBurn, balancesToGet, assetBalances) = _withdrawAll(lpAmount_)
 
     ([], balancesToGet)
 }
