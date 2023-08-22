@@ -119,7 +119,7 @@ export default async function (
           { type: 'integer', value: 100000000 }, // slippageRate_
           { type: 'integer', value: 3000000 }, // feeMaxRate_
           { type: 'string', value: multisigAddress }, // protocolFeeContract_
-          { type: 'integer', value: 2 }, // precision_
+          { type: 'integer', value: 10 }, // precision_
           { type: 'string', value: multisigAddress }, // pauser_
         ],
       },

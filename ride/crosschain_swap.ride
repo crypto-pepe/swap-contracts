@@ -916,6 +916,8 @@ func _depositAll(amount_: Int) = {
 func _deposit(assetId_: String, amount_: Int) = {
     let storage = _loadStorage()
     let lpTotalSupply = storage._3
+    let lpFeeRate = storage._4
+    let protocolFeeRate = storage._5
     let maxAllocAmplifier = storage._6
     let weightAmplifier = storage._7
     let slippageRate = storage._8
@@ -944,7 +946,7 @@ func _deposit(assetId_: String, amount_: Int) = {
 
     let lpTokensToMint =
         if lpTotalSupply == 0 then
-            assetTotalSupply - fee
+            throw("_deposit: empty pool")
         else
             let assetDiff = assetTotalSupply - prevAssetTotalSupply
             let feeDiff = fee - prevFee
@@ -965,14 +967,15 @@ func _deposit(assetId_: String, amount_: Int) = {
             )
             lpTokensToMintInner
 
-    (lpTokensToMint, assetBalances)
+    # fee is divided by 2 on deposit(), so deposit_fee + withdraw_fee == swap_fee
+    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(0, lpTokensToMint, lpFeeRate / 2, protocolFeeRate / 2)
+
+    (lpTokensToMint, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated)
 }
 
 func _withdrawAll(amount_: Int) = {
     let storage = _loadStorage()
     let lpTotalSupply = storage._3
-    let lpFeeRate = storage._4
-    let protocolFeeRate = storage._5
     let maxAllocAmplifier = storage._6
     let weightAmplifier = storage._7
     let slippageRate = storage._8
@@ -1024,9 +1027,10 @@ func _withdraw(assetId_: String, lpAmount_: Int) = {
 
     let k = fraction((lpTotalSupply - lpAmount_).toBigInt(), PERCENT_FACTOR, lpTotalSupply.toBigInt())
     let prevUtilValueWithK = fraction(prevUtilValue.toBigInt(), k, PERCENT_FACTOR).toInt()
+    let prevUtilValueDivLp = fraction(prevUtilValue.toBigInt(), PERCENT_FACTOR, lpTotalSupply.toBigInt(), CEILING)
 
     # Find amount with bisection method
-    func foldFunc(acc: (Boolean, Int, Int, Int), elem: String) = {
+    func foldFunc(acc: (Boolean, Int, Int, Int, Int), elem: String) = {
         if acc._1 then
             acc
         else
@@ -1038,18 +1042,19 @@ func _withdraw(assetId_: String, lpAmount_: Int) = {
             let tempAssetTotalSupply = prevAssetTotalSupply - currentAmount
             let utilValue = tempAssetTotalSupply - _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
 
-            if utilValue - prevUtilValueWithK < precision && utilValue - prevUtilValueWithK >= 0 then
-                (true, startInner, stopInner, currentAmount)
+            if -1 * precision < utilValue - prevUtilValueWithK && utilValue - prevUtilValueWithK < precision then
+                (true, startInner, stopInner, currentAmount, utilValue - prevUtilValueWithK)
             else if utilValue - prevUtilValueWithK < 0 then
-                (false, startInner, currentAmount, 0)
+                (false, startInner, currentAmount, currentAmount, utilValue - prevUtilValueWithK)
             else
-                (false, currentAmount, stopInner, 0)
+                (false, currentAmount, stopInner, currentAmount, utilValue - prevUtilValueWithK)
     }
 
     let targetAmount =
-        let (success, startOut, stopOut, targetAmountOut) = FOLD<64>(LIST_64, (false, 0, lpAmount_ + prevFee, 0), foldFunc)
+        let stop = fraction((lpAmount_ + prevFee).toBigInt(), prevUtilValueDivLp, PERCENT_FACTOR, CEILING).toInt()
+        let (success, startOut, stopOut, targetAmountOut, diffOut) = FOLD<64>(LIST_64, (false, 0, stop, 0, 0), foldFunc)
         if !success then
-            throw("_withdraw: can't calculate targetAmount="+targetAmountOut.toString())
+            throw("_withdraw: can't calculate targetAmount=" + targetAmountOut.toString() + ",diff=" + diffOut.toString())
         else targetAmountOut
 
     let finalAssetBalances = _decrementBalanceByIndex(prevAssetBalances, targetAssetIndex, targetAmount)
@@ -1077,7 +1082,8 @@ func _withdraw(assetId_: String, lpAmount_: Int) = {
         feeMaxRate
     )
 
-    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(targetAssetIndex + 1, targetAmount, lpFeeRate, protocolFeeRate)
+    # fee is divided by 2 on withdraw(), so deposit_fee + withdraw_fee == swap_fee
+    let (lpFee, protocolFee, sigmaFeePerLpUpdated) = _calculateLpAndProtocolFees(targetAssetIndex + 1, targetAmount, lpFeeRate / 2, protocolFeeRate / 2)
     (targetAmount, finalAssetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated)
 }
 
@@ -1103,7 +1109,7 @@ func _swap(sourceAssetIndex_: Int, targetAssetIndex_: Int, sourceAmount_: Int) =
     let prevUtilValue = prevAssetTotalSupply - prevFee
 
     # Find amount with bisection method
-    func foldFunc(acc: (Boolean, Int, Int, Int), elem: String) = {
+    func foldFunc(acc: (Boolean, Int, Int, Int, Int), elem: String) = {
         if acc._1 then
             acc
         else
@@ -1115,12 +1121,12 @@ func _swap(sourceAssetIndex_: Int, targetAssetIndex_: Int, sourceAmount_: Int) =
             let tempAssetTotalSupply = assetTotalSupply - currentAmount
             let utilValue = tempAssetTotalSupply - _calculateFee(tempAssetBalances, tempAssetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
 
-            if utilValue - prevUtilValue < precision && utilValue - prevUtilValue >= 0 then
-                (true, startInner, stopInner, currentAmount)
+            if -1 * precision < utilValue - prevUtilValue && utilValue - prevUtilValue < precision then
+                (true, startInner, stopInner, currentAmount, utilValue - prevUtilValue)
             else if utilValue - prevUtilValue < 0 then
-                (false, startInner, currentAmount, 0)
+                (false, startInner, currentAmount, currentAmount, utilValue - prevUtilValue)
             else
-                (false, currentAmount, stopInner, 0)
+                (false, currentAmount, stopInner, currentAmount, utilValue - prevUtilValue)
     }
 
     let targetAmount =
@@ -1132,9 +1138,9 @@ func _swap(sourceAssetIndex_: Int, targetAssetIndex_: Int, sourceAmount_: Int) =
         if feeDiff == 0 then
             targetAmount
         else
-            let (success, startOut, stopOut, targetAmountOut) = FOLD<64>(LIST_64, (false, 0, sourceAmount_ + prevFee, 0), foldFunc)
+            let (success, startOut, stopOut, targetAmountOut, diffOut) = FOLD<64>(LIST_64, (false, 0, sourceAmount_ + prevFee, 0, 0), foldFunc)
             if !success then
-                throw("_swap: can't calculate targetAmount="+targetAmountOut.toString())
+                throw("_swap: can't calculate targetAmount=" + targetAmountOut.toString() + ",diff=" + diffOut.toString())
             else targetAmountOut
 
     let finalAssetBalances = _decrementBalanceByIndex(assetBalances, targetAssetIndex_, targetAmount)
@@ -1304,7 +1310,8 @@ func deposit(minLpAmount_: Int) = {
 
     let storage = _loadStorage()
     let lpAssetId = storage._1
-    let lpDecimals = lpAssetId.toBase58String()._getDecimals()
+    let lpAssetIdStr = lpAssetId._assetToStr()
+    let lpDecimals = lpAssetIdStr._getDecimals()
 
     strict err1 =
         _whenInitialized() &&
@@ -1317,9 +1324,9 @@ func deposit(minLpAmount_: Int) = {
     let assetDecimals = assetStr._getDecimals()
     let amountNormalized = _normalizeDecimals(i.payments[0].amount, assetDecimals, lpDecimals, DOWN)
 
-    let (lpTokensToMint, assetBalances) = _deposit(assetStr, amountNormalized)
-
-    strict err2 = _validateInt(lpTokensToMint, minLpAmount_, MAX_INT, "deposit: less than min lp")
+    let (lpTokensToMint, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _deposit(assetStr, amountNormalized)
+    let lpTokensToSend = lpTokensToMint - lpFee - protocolFee
+    strict err2 = _validateInt(lpTokensToSend, minLpAmount_, MAX_INT, "deposit: less than min")
 
     let storageUpdated = (
         storage._1,
@@ -1337,10 +1344,13 @@ func deposit(minLpAmount_: Int) = {
     (
         [
             Reissue(lpAssetId, lpTokensToMint, true),
-            ScriptTransfer(i.caller, lpTokensToMint, lpAssetId)
+            ScriptTransfer(i.caller, lpTokensToSend, lpAssetId)
         ] ++
         _saveStorage(storageUpdated) ++
-        _saveAssetBalances(assetBalances),
+        _saveAssetBalances(assetBalances) ++
+        _saveLpFee(lpAssetIdStr, lpFee + _loadLpFee(lpAssetIdStr)) ++
+        _saveProtocolFee(lpAssetIdStr, protocolFee + _loadProtocolFee(lpAssetIdStr)) ++
+        _saveSigmaFeePerLp(sigmaFeePerLpUpdated),
         unit
     )
 }
@@ -1406,7 +1416,7 @@ func withdraw(assetId_: String, minAmount_: Int) = {
     let finalAmountNormalized = targetAmountNormalized - lpFee - protocolFee
     let targetDecimals = assetId_._getDecimals()
     let finalAmount = finalAmountNormalized._normalizeDecimals(lpDecimals, targetDecimals, DOWN)
-    strict err1 = _validateInt(finalAmount, minAmount_, MAX_INT, "withdraw: insufficient final amount")
+    strict err1 = _validateInt(finalAmount, minAmount_, MAX_INT, "withdraw: less than min")
 
     let storageUpdated = (
         storage._1,
@@ -1459,7 +1469,7 @@ func swap(targetAssetId_: String, minAmount_: Int) = {
     let finalAmountNormalized = targetAmountNormalized - lpFee - protocolFee
     let targetDecimals = targetAssetId_._getDecimals()
     let finalAmount = finalAmountNormalized._normalizeDecimals(lpDecimals, targetDecimals, DOWN)
-    strict err1 = _validateInt(finalAmount, minAmount_, MAX_INT, "swap: insufficient final amount")
+    strict err1 = _validateInt(finalAmount, minAmount_, MAX_INT, "swap: less than min")
 
     (
         [ScriptTransfer(i.caller, finalAmount, targetAssetId_._strToAsset())] ++
@@ -1490,7 +1500,7 @@ func getDepositAll(lpAmount_: Int) = {
     # assetId_ - base58 asset string from payment[0] in deposit()
     # amount_ - amount from payment[0] in deposit()
 # RETURNS
-    # lpTokensToMint - LP tokens we get after deposit()
+    # lpTokensToSend - LP tokens we get after deposit()
 @Callable(i)
 func getDeposit(assetId_: String, amount_: Int) = {
     strict err =
@@ -1502,9 +1512,10 @@ func getDeposit(assetId_: String, amount_: Int) = {
     let lpDecimals = lpAssetId.toBase58String()._getDecimals()
     let assetDecimals = assetId_._getDecimals()
     let amountNormalized = _normalizeDecimals(amount_, assetDecimals, lpDecimals, DOWN)
-    let (lpTokensToMint, assetBalances) = _deposit(assetId_, amountNormalized)
+    let (lpTokensToMint, assetBalances, lpFee, protocolFee, sigmaFeePerLpUpdated) = _deposit(assetId_, amountNormalized)
+    let lpTokensToSend = lpTokensToMint - lpFee - protocolFee
 
-    ([], lpTokensToMint)
+    ([], lpTokensToSend)
 }
 
 # ARGS
@@ -1604,6 +1615,23 @@ func getUtilFunc() = {
     let utilValue = assetTotalSupply - fee
 
     ([], (utilValue, lpTotalSupply))
+}
+
+# RETURNS
+    # fee: fee function value
+@Callable(i)
+func getFeeFunc() = {
+    let storage = _loadStorage()
+    let weightAmplifier = storage._7
+    let slippageRate = storage._8
+    let feeMaxRate = storage._9
+
+    let (assetBalances, assetTotalSupply) = _loadAssetBalances()
+    let (assetWeights, sigmaWeight) = _loadAssetWeights()
+
+    let fee = _calculateFee(assetBalances, assetTotalSupply, assetWeights, sigmaWeight, weightAmplifier, slippageRate, feeMaxRate)
+
+    ([], fee)
 }
 
 # ---------- Public staking callable functions ----------
